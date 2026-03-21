@@ -95,7 +95,7 @@ toggle_window_zoom() {
 }
 
 _save_command_strategy_file() {
-	local save_command_strategy="$(get_tmux_option "$save_command_strategy_option" "$default_save_command_strategy")"
+	local save_command_strategy="$(save_command_strategy)"
 	local strategy_file="$CURRENT_DIR/../save_command_strategies/${save_command_strategy}.sh"
 	local default_strategy_file="$CURRENT_DIR/../save_command_strategies/${default_save_command_strategy}.sh"
 	if [ -e "$strategy_file" ]; then # strategy file exists?
@@ -105,11 +105,34 @@ _save_command_strategy_file() {
 	fi
 }
 
+save_command_strategy() {
+	get_tmux_option "$save_command_strategy_option" "$default_save_command_strategy"
+}
+
 pane_full_command() {
 	local pane_pid="$1"
 	local strategy_file="$(_save_command_strategy_file)"
 	# execute strategy script to get pane full command
 	$strategy_file "$pane_pid"
+}
+
+dump_pane_commands_to_file() {
+	local ps_output_file="$1"
+	ps -ao "ppid,args" |
+		sed "s/^ *//" > "$ps_output_file"
+}
+
+pane_full_command_from_file() {
+	local pane_pid="$1"
+	local ps_output_file="$2"
+	awk -v ppid="$pane_pid" '
+		$1 == ppid {
+			$1 = ""
+			sub(/^ /, "")
+			print
+			exit
+		}
+	' "$ps_output_file"
 }
 
 number_nonempty_lines_on_screen() {
@@ -188,16 +211,27 @@ fetch_and_dump_grouped_sessions(){
 # translates pane pid to process command running inside a pane
 dump_panes() {
 	local full_command
+	local save_command_strategy="$(save_command_strategy)"
+	local ps_output_file=""
+	if [ "$save_command_strategy" == "ps" ]; then
+		ps_output_file="$(mktemp "${TMPDIR:-/tmp}/tmux-resurrect-ps.XXXXXX")"
+		dump_pane_commands_to_file "$ps_output_file"
+	fi
 	dump_panes_raw |
 		while IFS=$d read line_type session_name window_number window_active window_flags pane_index pane_title dir pane_active pane_command pane_pid history_size; do
 			# not saving panes from grouped sessions
 			if is_session_grouped "$session_name"; then
 				continue
 			fi
-			full_command="$(pane_full_command $pane_pid)"
+			if [ -n "$ps_output_file" ]; then
+				full_command="$(pane_full_command_from_file "$pane_pid" "$ps_output_file")"
+			else
+				full_command="$(pane_full_command "$pane_pid")"
+			fi
 			dir=$(echo $dir | sed 's/ /\\ /') # escape all spaces in directory path
 			echo "${line_type}${d}${session_name}${d}${window_number}${d}${window_active}${d}${window_flags}${d}${pane_index}${d}${pane_title}${d}${dir}${d}${pane_active}${d}${pane_command}${d}:${full_command}"
 		done
+	[ -z "$ps_output_file" ] || rm -f "$ps_output_file"
 }
 
 dump_windows() {
