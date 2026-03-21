@@ -1,3 +1,7 @@
+RESTORE_LIST_CACHE_INITIALIZED="false"
+RESTORE_ALL_PROCESSES="false"
+RESTORE_LIST_CACHE=()
+
 restore_pane_processes_enabled() {
 	local restore_processes="$(get_tmux_option "$restore_processes_option" "$restore_processes")"
 	if [ "$restore_processes" == "false" ]; then
@@ -15,9 +19,6 @@ restore_pane_process() {
 	local dir="$5"
 	local command
 	if _process_should_be_restored "$pane_full_command" "$session_name" "$window_number" "$pane_index"; then
-		tmux switch-client -t "${session_name}:${window_number}"
-		tmux select-pane -t "$pane_index"
-
 		local inline_strategy="$(_get_inline_strategy "$pane_full_command")" # might not be defined
 		if [ -n "$inline_strategy" ]; then
 			# inline strategy exists
@@ -41,6 +42,25 @@ restore_pane_process() {
 
 # private functions below
 
+_initialize_restore_list_cache() {
+	if [ "$RESTORE_LIST_CACHE_INITIALIZED" == "true" ]; then
+		return
+	fi
+
+	local restore_processes_value="$(get_tmux_option "$restore_processes_option" "$restore_processes")"
+	local restore_list="$(_restore_list)"
+
+	if [ "$restore_processes_value" == ":all:" ]; then
+		RESTORE_ALL_PROCESSES="true"
+	fi
+
+	if [ -n "$restore_list" ]; then
+		eval "RESTORE_LIST_CACHE=($restore_list)"
+	fi
+
+	RESTORE_LIST_CACHE_INITIALIZED="true"
+}
+
 _process_should_be_restored() {
 	local pane_full_command="$1"
 	local session_name="$2"
@@ -63,8 +83,8 @@ _process_should_be_restored() {
 }
 
 _restore_all_processes() {
-	local restore_processes="$(get_tmux_option "$restore_processes_option" "$restore_processes")"
-	if [ "$restore_processes" == ":all:" ]; then
+	_initialize_restore_list_cache
+	if [ "$RESTORE_ALL_PROCESSES" == "true" ]; then
 		return 0
 	else
 		return 1
@@ -73,11 +93,10 @@ _restore_all_processes() {
 
 _process_on_the_restore_list() {
 	local pane_full_command="$1"
-	# TODO: make this work without eval
-	eval set $(_restore_list)
 	local proc
 	local match
-	for proc in "$@"; do
+	_initialize_restore_list_cache
+	for proc in "${RESTORE_LIST_CACHE[@]}"; do
 		match="$(_get_proc_match_element "$proc")"
 		if _proc_matches_full_command "$pane_full_command" "$match"; then
 			return 0
@@ -155,11 +174,10 @@ _proc_starts_with_tildae() {
 
 _get_inline_strategy() {
 	local pane_full_command="$1"
-	# TODO: make this work without eval
-	eval set $(_restore_list)
 	local proc
 	local match
-	for proc in "$@"; do
+	_initialize_restore_list_cache
+	for proc in "${RESTORE_LIST_CACHE[@]}"; do
 		if [[ "$proc" =~ "$inline_strategy_token" ]]; then
 			match="$(_get_proc_match_element "$proc")"
 			if _proc_matches_full_command "$pane_full_command" "$match"; then
