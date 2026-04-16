@@ -62,6 +62,10 @@ main() {
 		msg "Tmux resurrect: unsupported save format (version: ${version:-unknown})"
 		return 1
 	fi
+	if ! awk '/^\{"t":"pane"/ { found=1; exit } END { exit !found }' "$save_file"; then
+		msg "Tmux resurrect: save file contains no panes: $save_file"
+		return 1
+	fi
 
 	# Detect "from scratch" mode: only 1 pane = fresh tmux server
 	local from_scratch="false"
@@ -356,13 +360,21 @@ main() {
 
 	# From-scratch cleanup: kill the renamed default session
 	if [ "$from_scratch" = "true" ]; then
-		# Ensure client switched away from temp session
-		local current_session
-		current_session="$(tmux display-message -p '#{client_session}')"
-		if [ "$current_session" = "$tmp_session" ]; then
-			tmux switch-client -n 2>/dev/null || true
+		# Ensure there is another session before removing the startup session.
+		local current_session replacement_session
+		replacement_session="$(tmux list-sessions -F '#{session_name}' 2>/dev/null | awk -v tmp="$tmp_session" '$0 != tmp { print; exit }')"
+		if [ -z "$replacement_session" ]; then
+			msg "Tmux resurrect: no restored sessions; keeping startup session"
+			return 1
 		fi
-		tmux kill-session -t "$tmp_session" 2>/dev/null || true
+		current_session="$(tmux display-message -p '#{client_session}' 2>/dev/null || true)"
+		if [ "$current_session" = "$tmp_session" ]; then
+			tmux switch-client -t "$replacement_session" 2>/dev/null || true
+		fi
+		current_session="$(tmux display-message -p '#{client_session}' 2>/dev/null || true)"
+		if [ "$current_session" != "$tmp_session" ]; then
+			tmux kill-session -t "$tmp_session" 2>/dev/null || true
+		fi
 	fi
 
 	# --- Process restoration (second pass) ---

@@ -37,9 +37,17 @@ hook() {
 }
 
 main() {
-	local dir file tmp last ps_file d
+	local dir file tmp last ps_file d pane_count
 
 	dir="$(resurrect_dir)"
+	mkdir -p "$dir"
+
+	pane_count="$(tmux list-panes -a -F x 2>/dev/null | wc -l | tr -d ' ')"
+	if ! [[ "$pane_count" =~ ^[0-9]+$ ]] || [ "$pane_count" -eq 0 ]; then
+		msg "Tmux resurrect: no panes to save"
+		return 1
+	fi
+
 	file="$dir/tmux_resurrect_$(date +%Y%m%dT%H%M%S).jsonl"
 	tmp="$(mktemp "$dir/.save-tmp.XXXXXX")"
 	last="$dir/last"
@@ -47,7 +55,6 @@ main() {
 	d=$'\t'
 
 	trap 'rm -f "$tmp" "$ps_file"' EXIT
-	mkdir -p "$dir"
 
 	msg "Saving..."
 
