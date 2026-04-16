@@ -1,330 +1,160 @@
 #!/usr/bin/env bash
 
-CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-source "$CURRENT_DIR/variables.sh"
-source "$CURRENT_DIR/helpers.sh"
-source "$CURRENT_DIR/spinner_helpers.sh"
+QUIET="$1"
 
-# delimiters
-d=$'\t'
-delimiter=$'\t'
-
-# if "quiet" script produces no output
-SCRIPT_OUTPUT="$1"
-
-grouped_sessions_format() {
-	local format
-	format+="#{session_grouped}"
-	format+="${delimiter}"
-	format+="#{session_group}"
-	format+="${delimiter}"
-	format+="#{session_id}"
-	format+="${delimiter}"
-	format+="#{session_name}"
-	echo "$format"
-}
-
-pane_format() {
-	local format
-	format+="pane"
-	format+="${delimiter}"
-	format+="#{session_name}"
-	format+="${delimiter}"
-	format+="#{window_index}"
-	format+="${delimiter}"
-	format+="#{window_active}"
-	format+="${delimiter}"
-	format+=":#{window_flags}"
-	format+="${delimiter}"
-	format+="#{pane_index}"
-	format+="${delimiter}"
-	format+="#{pane_title}"
-	format+="${delimiter}"
-	format+=":#{pane_current_path}"
-	format+="${delimiter}"
-	format+="#{pane_active}"
-	format+="${delimiter}"
-	format+="#{pane_current_command}"
-	format+="${delimiter}"
-	format+="#{pane_pid}"
-	format+="${delimiter}"
-	format+="#{history_size}"
-	echo "$format"
-}
-
-window_format() {
-	local format
-	format+="window"
-	format+="${delimiter}"
-	format+="#{session_name}"
-	format+="${delimiter}"
-	format+="#{window_index}"
-	format+="${delimiter}"
-	format+=":#{window_name}"
-	format+="${delimiter}"
-	format+="#{window_active}"
-	format+="${delimiter}"
-	format+=":#{window_flags}"
-	format+="${delimiter}"
-	format+="#{window_layout}"
-	echo "$format"
-}
-
-state_format() {
-	local format
-	format+="state"
-	format+="${delimiter}"
-	format+="#{client_session}"
-	format+="${delimiter}"
-	format+="#{client_last_session}"
-	echo "$format"
-}
-
-dump_panes_raw() {
-	tmux list-panes -a -F "$(pane_format)"
-}
-
-dump_windows_raw(){
-	tmux list-windows -a -F "$(window_format)"
-}
-
-toggle_window_zoom() {
-	local target="$1"
-	tmux resize-pane -Z -t "$target"
-}
-
-_save_command_strategy_file() {
-	local save_command_strategy="$(save_command_strategy)"
-	local strategy_file="$CURRENT_DIR/../save_command_strategies/${save_command_strategy}.sh"
-	local default_strategy_file="$CURRENT_DIR/../save_command_strategies/${default_save_command_strategy}.sh"
-	if [ -e "$strategy_file" ]; then # strategy file exists?
-		echo "$strategy_file"
-	else
-		echo "$default_strategy_file"
+resurrect_dir() {
+	local opt
+	opt="$(tmux show-option -gqv '@resurrect-dir')"
+	if [ -n "$opt" ]; then
+		echo "$opt" | sed "s,\$HOME,$HOME,g; s,\$HOSTNAME,$(hostname),g; s,\~,$HOME,g"
+		return
 	fi
+	if [ -d "$HOME/.tmux/resurrect" ]; then
+		echo "$HOME/.tmux/resurrect"
+		return
+	fi
+	echo "${XDG_DATA_HOME:-$HOME/.local/share}/tmux/resurrect"
 }
 
-save_command_strategy() {
-	get_tmux_option "$save_command_strategy_option" "$default_save_command_strategy"
+msg() {
+	[ "$QUIET" = "quiet" ] && return
+	tmux display-message "$1"
 }
 
-pane_full_command() {
-	local pane_pid="$1"
-	local strategy_file="$(_save_command_strategy_file)"
-	# execute strategy script to get pane full command
-	$strategy_file "$pane_pid"
-}
-
-dump_pane_commands_to_file() {
-	local ps_output_file="$1"
-	ps -ao "ppid,args" |
-		sed "s/^ *//" > "$ps_output_file"
-}
-
-pane_full_command_from_file() {
-	local pane_pid="$1"
-	local ps_output_file="$2"
-	awk -v ppid="$pane_pid" '
-		$1 == ppid {
-			$1 = ""
-			sub(/^ /, "")
-			print
-			exit
-		}
-	' "$ps_output_file"
-}
-
-number_nonempty_lines_on_screen() {
-	local pane_id="$1"
-	tmux capture-pane -pJ -t "$pane_id" |
-		sed '/^$/d' |
-		wc -l |
-		sed 's/ //g'
-}
-
-# tests if there was any command output in the current pane
-pane_has_any_content() {
-	local pane_id="$1"
-	local history_size="$(tmux display -p -t "$pane_id" -F "#{history_size}")"
-	local cursor_y="$(tmux display -p -t "$pane_id" -F "#{cursor_y}")"
-	# doing "cheap" tests first
-	[ "$history_size" -gt 0 ] || # history has any content?
-		[ "$cursor_y" -gt 0 ] || # cursor not in first line?
-		[ "$(number_nonempty_lines_on_screen "$pane_id")" -gt 1 ]
-}
-
-capture_pane_contents() {
-	local pane_id="$1"
-	local start_line="-$2"
-	local pane_contents_area="$3"
-	if pane_has_any_content "$pane_id"; then
-		if [ "$pane_contents_area" = "visible" ]; then
-			start_line="0"
+hook() {
+	local kind="$1"
+	shift
+	local cmd args=""
+	cmd="$(tmux show-option -gqv "@resurrect-hook-$kind")"
+	if [ -n "$cmd" ]; then
+		if [ "$#" -gt 0 ]; then
+			printf -v args "%q " "$@"
 		fi
-		# the printf hack below removes *trailing* empty lines
-		printf '%s\n' "$(tmux capture-pane -epJ -S "$start_line" -t "$pane_id")" > "$(pane_contents_file "save" "$pane_id")"
+		eval "$cmd $args"
 	fi
-}
-
-get_active_window_index() {
-	local session_name="$1"
-	tmux list-windows -t "$session_name" -F "#{window_flags} #{window_index}" |
-		awk '$1 ~ /\*/ { print $2; }'
-}
-
-get_alternate_window_index() {
-	local session_name="$1"
-	tmux list-windows -t "$session_name" -F "#{window_flags} #{window_index}" |
-		awk '$1 ~ /-/ { print $2; }'
-}
-
-dump_grouped_sessions() {
-	local current_session_group=""
-	local original_session
-	tmux list-sessions -F "$(grouped_sessions_format)" |
-		grep "^1" |
-		cut -c 3- |
-		sort |
-		while IFS=$d read session_group session_id session_name; do
-			if [ "$session_group" != "$current_session_group" ]; then
-				# this session is the original/first session in the group
-				original_session="$session_name"
-				current_session_group="$session_group"
-			else
-				# this session "points" to the original session
-				active_window_index="$(get_active_window_index "$session_name")"
-				alternate_window_index="$(get_alternate_window_index "$session_name")"
-				echo "grouped_session${d}${session_name}${d}${original_session}${d}:${alternate_window_index}${d}:${active_window_index}"
-			fi
-		done
-}
-
-fetch_and_dump_grouped_sessions(){
-	local grouped_sessions_dump="$(dump_grouped_sessions)"
-	get_grouped_sessions "$grouped_sessions_dump"
-	if [ -n "$grouped_sessions_dump" ]; then
-		echo "$grouped_sessions_dump"
-	fi
-}
-
-# translates pane pid to process command running inside a pane
-dump_panes() {
-	local save_command_strategy="$(save_command_strategy)"
-
-	if [ "$save_command_strategy" == "ps" ]; then
-		local ps_file
-		ps_file="$(mktemp "${TMPDIR:-/tmp}/tmux-resurrect-ps.XXXXXX")"
-		dump_pane_commands_to_file "$ps_file"
-
-		# Single awk process joins ps output with pane data
-		awk -v grouped="$GROUPED_SESSIONS" '
-		NR == FNR {
-			pid = $1
-			if (!(pid in cmds)) {
-				$1 = ""
-				sub(/^ /, "")
-				cmds[pid] = $0
-			}
-			next
-		}
-		{
-			n = split($0, f, "\t")
-			if (index(grouped, "\t" f[2] "\t") > 0) next
-			dir = f[8]
-			gsub(/ /, "\\\\ ", dir)
-			cmd = (f[11] in cmds) ? cmds[f[11]] : ""
-			printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t:%s\n", f[1], f[2], f[3], f[4], f[5], f[6], f[7], dir, f[9], f[10], cmd
-		}' "$ps_file" <(dump_panes_raw)
-
-		rm -f "$ps_file"
-	else
-		local full_command
-		while IFS=$d read line_type session_name window_number window_active window_flags pane_index pane_title dir pane_active pane_command pane_pid history_size; do
-			# not saving panes from grouped sessions
-			if is_session_grouped "$session_name"; then
-				continue
-			fi
-			full_command="$(pane_full_command "$pane_pid")"
-			dir=$(echo "$dir" | sed 's/ /\\ /g') # escape all spaces in directory path
-			echo "${line_type}${d}${session_name}${d}${window_number}${d}${window_active}${d}${window_flags}${d}${pane_index}${d}${pane_title}${d}${dir}${d}${pane_active}${d}${pane_command}${d}:${full_command}"
-		done < <(dump_panes_raw)
-	fi
-}
-
-dump_windows() {
-	dump_windows_raw |
-		while IFS=$d read line_type session_name window_index window_name window_active window_flags window_layout; do
-			# not saving windows from grouped sessions
-			if is_session_grouped "$session_name"; then
-				continue
-			fi
-			automatic_rename="$(tmux show-window-options -vt "${session_name}:${window_index}" automatic-rename)"
-			# If the option was unset, use ":" as a placeholder.
-			[ -z "${automatic_rename}" ] && automatic_rename=":"
-			echo "${line_type}${d}${session_name}${d}${window_index}${d}${window_name}${d}${window_active}${d}${window_flags}${d}${window_layout}${d}${automatic_rename}"
-		done
-}
-
-dump_state() {
-	tmux display-message -p "$(state_format)"
-}
-
-dump_pane_contents() {
-	local pane_contents_area="$(get_tmux_option "$pane_contents_area_option" "$default_pane_contents_area")"
-	dump_panes_raw |
-		while IFS=$d read line_type session_name window_number window_active window_flags pane_index pane_title dir pane_active pane_command pane_pid history_size; do
-			capture_pane_contents "${session_name}:${window_number}.${pane_index}" "$history_size" "$pane_contents_area"
-		done
-}
-
-remove_old_backups() {
-	# remove resurrect files older than 30 days (default), but keep at least 5 copies of backup.
-	local delete_after="$(get_tmux_option "$delete_backup_after_option" "$default_delete_backup_after")"
-	local -a files
-	files=($(ls -t $(resurrect_dir)/${RESURRECT_FILE_PREFIX}_*.${RESURRECT_FILE_EXTENSION} | tail -n +6))
-	[[ ${#files[@]} -eq 0 ]] ||
-		find "${files[@]}" -type f -mtime "+${delete_after}" -exec rm -v "{}" \; > /dev/null
-}
-
-save_all() {
-	local resurrect_file_path="$(resurrect_file_path)"
-	local last_resurrect_file="$(last_resurrect_file)"
-	mkdir -p "$(resurrect_dir)"
-	fetch_and_dump_grouped_sessions > "$resurrect_file_path"
-	dump_panes   >> "$resurrect_file_path"
-	dump_windows >> "$resurrect_file_path"
-	dump_state   >> "$resurrect_file_path"
-	execute_hook "post-save-layout" "$resurrect_file_path"
-	if files_differ "$resurrect_file_path" "$last_resurrect_file"; then
-		ln -fs "$(basename "$resurrect_file_path")" "$last_resurrect_file"
-	else
-		rm "$resurrect_file_path"
-	fi
-	if capture_pane_contents_option_on; then
-		mkdir -p "$(pane_contents_dir "save")"
-		dump_pane_contents
-		pane_contents_create_archive
-		rm "$(pane_contents_dir "save")"/*
-	fi
-	remove_old_backups
-	execute_hook "post-save-all"
-}
-
-show_output() {
-	[ "$SCRIPT_OUTPUT" != "quiet" ]
 }
 
 main() {
-	if supported_tmux_version_ok; then
-		if show_output; then
-			start_spinner "Saving..." "Tmux environment saved!"
+	local dir file tmp last ps_file d
+
+	dir="$(resurrect_dir)"
+	file="$dir/tmux_resurrect_$(date +%Y%m%dT%H%M%S).jsonl"
+	tmp="$(mktemp "$dir/.save-tmp.XXXXXX")"
+	last="$dir/last"
+	ps_file="$(mktemp "${TMPDIR:-/tmp}/resurrect-ps.XXXXXX")"
+	d=$'\t'
+
+	trap 'rm -f "$tmp" "$ps_file"' EXIT
+	mkdir -p "$dir"
+
+	msg "Saving..."
+
+	# One ps snapshot for all panes
+	ps -ao ppid=,args= | sed 's/^ *//' > "$ps_file"
+
+	# Identify grouped (secondary) sessions. For each group, the first session
+	# (by session_id sort order) is the original; the rest are secondary.
+	local grouped_secondary="" group_lines="" prev_group="" orig=""
+	while IFS=$'\t' read -r session_group session_id session_name; do
+		if [ "$session_group" != "$prev_group" ]; then
+			prev_group="$session_group"
+			orig="$session_name"
+		else
+			grouped_secondary="${grouped_secondary}${d}${session_name}${d}"
+			# Per-session window lookups (grouped sessions are rare: usually 0)
+			local aw altw
+			aw="$(tmux list-windows -t "$session_name" -F '#{window_flags} #{window_index}' 2>/dev/null | awk '$1 ~ /\*/ {print $2}')"
+			altw="$(tmux list-windows -t "$session_name" -F '#{window_flags} #{window_index}' 2>/dev/null | awk '$1 ~ /-/ {print $2}')"
+			aw="${aw:--1}"
+			altw="${altw:--1}"
+			local je_name je_orig
+			je_name="$(printf '%s' "$session_name" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+			je_orig="$(printf '%s' "$orig" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+			group_lines="${group_lines}{\"t\":\"group\",\"s\":\"${je_name}\",\"orig\":\"${je_orig}\",\"aw\":${aw},\"altw\":${altw}}
+"
 		fi
-		save_all
-		if show_output; then
-			stop_spinner
-			display_message "Tmux environment saved!"
+	done < <(tmux list-sessions -F "#{session_grouped}${d}#{session_group}${d}#{session_id}${d}#{session_name}" 2>/dev/null | grep "^1" | cut -c3- | sort)
+
+	# Pane format: all fields in one tmux call
+	local fmt="#{session_name}${d}#{window_index}${d}#{pane_index}${d}#{pane_current_path}${d}#{pane_current_command}${d}#{pane_pid}${d}#{window_active}${d}#{pane_active}${d}#{window_flags}${d}#{pane_title}${d}#{window_layout}${d}#{window_name}${d}#{?automatic-rename,on,off}"
+
+	# Emit NDJSON: header + panes + grouped sessions + client state
+	{
+		# Header
+		printf '{"v":2,"ts":"%s","tmux":"%s"}\n' \
+			"$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+			"$(tmux -V | cut -d' ' -f2)"
+
+		# Panes — one tmux command, one awk process joins with ps data
+		tmux list-panes -a -F "$fmt" | \
+			awk -F'\t' -v ps_file="$ps_file" -v grouped="$grouped_secondary" '
+			function je(s) { gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); return s }
+			BEGIN {
+				while ((getline line < ps_file) > 0) {
+					n = index(line, " ")
+					if (n > 0) {
+						pid = substr(line, 1, n-1)
+						cmd = substr(line, n+1)
+						if (!(pid in C)) C[pid] = cmd
+					}
+				}
+				close(ps_file)
+			}
+			{
+				# Skip panes from secondary grouped sessions
+				if (grouped != "" && index(grouped, "\t" $1 "\t") > 0) next
+
+				pcmd = ($6 in C) ? C[$6] : ""
+				printf "{\"t\":\"pane\",\"s\":\"%s\",\"wi\":%s,\"pi\":%s,\"path\":\"%s\",\"cmd\":\"%s\",\"pcmd\":\"%s\",\"wa\":%s,\"pa\":%s,\"wf\":\"%s\",\"pt\":\"%s\",\"wl\":\"%s\",\"wn\":\"%s\",\"ar\":\"%s\"}\n",
+					je($1), $2, $3, je($4), je($5), je(pcmd), $7, $8, je($9), je($10), je($11), je($12), $13
+			}'
+
+		# Grouped session lines
+		if [ -n "$group_lines" ]; then
+			printf '%s' "$group_lines"
 		fi
+
+		# Client state (pipe through awk for JSON escaping)
+		tmux display-message -p "#{client_session}${d}#{client_last_session}" | \
+			awk -F'\t' '
+			function je(s) { gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); return s }
+			{ printf "{\"t\":\"state\",\"active\":\"%s\",\"last\":\"%s\"}\n", je($1), je($2) }'
+	} > "$tmp"
+
+	# Atomic rename
+	mv "$tmp" "$file"
+	trap 'rm -f "$ps_file"' EXIT
+
+	hook "post-save-layout" "$file"
+
+	# Update last symlink only if content changed (skip header for comparison)
+	local prev prev_file
+	prev="$(readlink "$last" 2>/dev/null || true)"
+	if [ -n "$prev" ]; then
+		prev_file="$dir/$prev"
 	fi
+	if [ -z "$prev" ] || [ ! -f "$prev_file" ] || \
+	   ! cmp -s <(tail -n +2 "$file") <(tail -n +2 "$prev_file"); then
+		ln -sf "$(basename "$file")" "$last"
+	else
+		rm -f "$file"
+	fi
+
+	hook "post-save-all"
+
+	# Cleanup old backups: keep files from last N days, minimum 5 copies
+	local delete_after
+	delete_after="$(tmux show-option -gqv '@resurrect-delete-backup-after')"
+	: "${delete_after:=30}"
+	local -a old_files
+	old_files=($(ls -t "$dir"/tmux_resurrect_*.jsonl 2>/dev/null | tail -n +6))
+	if [ ${#old_files[@]} -gt 0 ]; then
+		find "${old_files[@]}" -type f -mtime "+${delete_after}" -exec rm -f {} \; 2>/dev/null
+	fi
+
+	msg "Tmux environment saved!"
 }
+
 main

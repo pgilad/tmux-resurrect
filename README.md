@@ -1,7 +1,5 @@
 # Tmux Resurrect
 
-[![Build Status](https://travis-ci.org/tmux-plugins/tmux-resurrect.svg?branch=master)](https://travis-ci.org/tmux-plugins/tmux-resurrect)
-
 Restore `tmux` environment after system restart.
 
 Tmux is great, except when you have to restart the computer. You lose all the
@@ -41,6 +39,7 @@ This plugin goes to great lengths to save and restore all the details from your
 - active and alternative window for each session
 - windows with focus
 - active pane for each window
+- pane titles
 - "grouped sessions" (useful feature when using tmux with multiple monitors)
 - programs running within a pane! More details in the
   [restoring programs doc](docs/restoring_programs.md).
@@ -51,24 +50,23 @@ Optional:
 - [restoring pane contents](docs/restoring_pane_contents.md)
 - [restoring a previously saved environment](docs/restoring_previously_saved_environment.md)
 
-Requirements / dependencies: `tmux 1.9` or higher, `bash`.
+Requirements / dependencies: `tmux 3.2` or higher, `bash`.
 
-Tested and working on Linux, OSX and Cygwin.
+Tested and working on Linux and macOS.
 
 `tmux-resurrect` is idempotent! It will not try to restore panes or windows that
-already exist.<br/>
+already exist.
 The single exception to this is when tmux is started with only 1 pane in order
-to restore previous tmux env. Only in this case will this single pane be
-overwritten.
+to restore previous tmux env. Only in this case will the default session be
+replaced.
 
-### Installation with [Tmux Plugin Manager](https://github.com/tmux-plugins/tpm) (recommended)
+### Installation with [tpm-rs](https://github.com/pgilad/tpm-rs) (recommended)
 
-Add plugin to the list of TPM plugins in `.tmux.conf`:
+Add plugin to your `.tmux.conf`:
 
     set -g @plugin 'tmux-plugins/tmux-resurrect'
 
-Hit `prefix + I` to fetch the plugin and source it. You should now be able to
-use the plugin.
+Then install with `prefix + I`.
 
 ### Manual Installation
 
@@ -80,7 +78,7 @@ Add this line to the bottom of `.tmux.conf`:
 
     run-shell ~/clone/path/resurrect.tmux
 
-Reload TMUX environment with: `$ tmux source-file ~/.tmux.conf`.
+Reload tmux environment with: `$ tmux source-file ~/.tmux.conf`.
 You should now be able to use the plugin.
 
 ### Docs
@@ -91,18 +89,49 @@ You should now be able to use the plugin.
 
 - [Changing the default key bindings](docs/custom_key_bindings.md).
 - [Setting up hooks on save & restore](docs/hooks.md).
-- Only a conservative list of programs is restored by default:<br/>
-  `vi vim nvim emacs man less more tail top htop irssi weechat mutt`.<br/>
+- Only a conservative list of programs is restored by default:
+  `vi vim view nvim emacs man less more tail top htop irssi weechat mutt`.
   [Restoring programs doc](docs/restoring_programs.md) explains how to restore
   additional programs.
-- [Change a directory](docs/save_dir.md) where `tmux-resurrect` saves tmux
-  environment.
+- [Change the save directory](docs/save_dir.md) where `tmux-resurrect` saves
+  tmux environment.
 
 **Optional features**
 
 - [Restoring vim and neovim sessions](docs/restoring_vim_and_neovim_sessions.md)
   is nice if you're a vim/neovim user.
 - [Restoring pane contents](docs/restoring_pane_contents.md) feature.
+
+### Save format
+
+Save files use NDJSON (newline-delimited JSON) with a `.jsonl` extension. The
+format is versioned (currently v2) and self-describing. Save files are stored
+in `~/.local/share/tmux/resurrect/` by default (following XDG conventions), or
+in `~/.tmux/resurrect/` if that directory already exists from a previous
+installation.
+
+### Save performance
+
+The v2 save process is designed to be fast and lightweight:
+
+- **Single process snapshot** — one `ps` call captures all pane processes upfront,
+  replacing the old per-pane strategy lookups (pgrep, /proc, gdb).
+- **Single tmux query** — `tmux list-panes -a` retrieves all pane data in one
+  call, piped through a single AWK pass that joins process data in-memory and
+  emits NDJSON directly.
+- **No visual overhead** — no spinner or progress display; the save completes in
+  under a second on typical setups and is imperceptible.
+- **Deduplication** — if the environment hasn't changed since the last save, the
+  duplicate file is discarded and no new backup is written.
+
+These improvements make frequent saves practical. If you use
+[tmux-continuum](https://github.com/tmux-plugins/tmux-continuum) for automatic
+saving, a shorter interval such as 5 minutes works well:
+
+    set -g @continuum-save-interval '5'
+
+The previous default of 15 minutes was chosen when saving was heavier; with v2
+there is no performance reason to keep it that long.
 
 ### Other goodies
 
@@ -125,5 +154,9 @@ Both contributing and bug reports are welcome. Please check out
 [Mislav Marohnić](https://github.com/mislav) - the idea for the plugin came from his
 [tmux-session script](https://github.com/mislav/dotfiles/blob/2036b5e03fb430bbcbc340689d63328abaa28876/bin/tmux-session).
 
+This project is based on the original
+[tmux-plugins/tmux-resurrect](https://github.com/tmux-plugins/tmux-resurrect).
+
 ### License
-[MIT](LICENSE.md)
+
+[MIT](LICENSE)

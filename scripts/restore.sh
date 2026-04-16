@@ -1,388 +1,550 @@
 #!/usr/bin/env bash
 
-CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-source "$CURRENT_DIR/variables.sh"
-source "$CURRENT_DIR/helpers.sh"
-source "$CURRENT_DIR/process_restore_helpers.sh"
-source "$CURRENT_DIR/spinner_helpers.sh"
-
-# delimiter
-d=$'\t'
-
-# Global variable.
-# Used during the restore: if a pane already exists from before, it is
-# saved in the array in this variable. Later, process running in existing pane
-# is also not restored. That makes the restoration process more idempotent.
-EXISTING_PANES_VAR=""
-LAST_RESURRECT_FILE=""
-
-RESTORING_FROM_SCRATCH="false"
-
-RESTORE_PANE_CONTENTS="false"
-
-is_line_type() {
-	local line_type="$1"
-	local line="$2"
-	echo "$line" |
-		\grep -q "^$line_type"
-}
-
-check_saved_session_exists() {
-	if [ ! -f "$LAST_RESURRECT_FILE" ]; then
-		display_message "Tmux resurrect file not found!"
-		return 1
-	fi
-}
-
-pane_exists() {
-	local session_name="$1"
-	local window_number="$2"
-	local pane_index="$3"
-	tmux list-panes -t "${session_name}:${window_number}" -F "#{pane_index}" 2>/dev/null |
-		\grep -q "^$pane_index$"
-}
-
-register_existing_pane() {
-	local session_name="$1"
-	local window_number="$2"
-	local pane_index="$3"
-	local pane_custom_id="${session_name}:${window_number}:${pane_index}"
-	local delimiter=$'\t'
-	EXISTING_PANES_VAR="${EXISTING_PANES_VAR}${delimiter}${pane_custom_id}"
-}
-
-is_pane_registered_as_existing() {
-	local session_name="$1"
-	local window_number="$2"
-	local pane_index="$3"
-	local pane_custom_id="${session_name}:${window_number}:${pane_index}"
-	[[ "$EXISTING_PANES_VAR" =~ "$pane_custom_id" ]]
-}
-
-restore_from_scratch_true() {
-	RESTORING_FROM_SCRATCH="true"
-}
-
-is_restoring_from_scratch() {
-	[ "$RESTORING_FROM_SCRATCH" == "true" ]
-}
-
-restore_pane_contents_true() {
-	RESTORE_PANE_CONTENTS="true"
-}
-
-is_restoring_pane_contents() {
-	[ "$RESTORE_PANE_CONTENTS" == "true" ]
-}
-
-restored_session_0_true() {
-	RESTORED_SESSION_0="true"
-}
-
-has_restored_session_0() {
-	[ "$RESTORED_SESSION_0" == "true" ]
-}
-
-window_exists() {
-	local session_name="$1"
-	local window_number="$2"
-	tmux list-windows -t "$session_name" -F "#{window_index}" 2>/dev/null |
-		\grep -q "^$window_number$"
-}
-
-session_exists() {
-	local session_name="$1"
-	tmux has-session -t "$session_name" 2>/dev/null
-}
-
-first_window_num() {
-	tmux show -gv base-index
-}
-
-tmux_socket() {
-	echo $TMUX | cut -d',' -f1
-}
-
-# Tmux option stored in a global variable so that we don't have to "ask"
-# tmux server each time.
-cache_tmux_default_command() {
-	local default_shell="$(get_tmux_option "default-shell" "")"
-	local opt=""
-	if [ "$(basename "$default_shell")" == "bash" ]; then
-		opt="-l "
-	fi
-	export TMUX_DEFAULT_COMMAND="$(get_tmux_option "default-command" "$opt$default_shell")"
-}
-
-tmux_default_command() {
-	echo "$TMUX_DEFAULT_COMMAND"
-}
-
-pane_creation_command() {
-	echo "cat '$(pane_contents_file "restore" "${1}:${2}.${3}")'; exec $(tmux_default_command)"
-}
-
-new_window() {
-	local session_name="$1"
-	local window_number="$2"
-	local dir="$3"
-	local pane_index="$4"
-	local pane_id="${session_name}:${window_number}.${pane_index}"
-	dir="${dir/#\~/$HOME}"
-	if is_restoring_pane_contents && pane_contents_file_exists "$pane_id"; then
-		local pane_creation_command="$(pane_creation_command "$session_name" "$window_number" "$pane_index")"
-		tmux new-window -d -t "${session_name}:${window_number}" -c "$dir" "$pane_creation_command"
-	else
-		tmux new-window -d -t "${session_name}:${window_number}" -c "$dir"
-	fi
-}
-
-new_session() {
-	local session_name="$1"
-	local window_number="$2"
-	local dir="$3"
-	local pane_index="$4"
-	local pane_id="${session_name}:${window_number}.${pane_index}"
-	if is_restoring_pane_contents && pane_contents_file_exists "$pane_id"; then
-		local pane_creation_command="$(pane_creation_command "$session_name" "$window_number" "$pane_index")"
-		TMUX="" tmux -S "$(tmux_socket)" new-session -d -s "$session_name" -c "$dir" "$pane_creation_command"
-	else
-		TMUX="" tmux -S "$(tmux_socket)" new-session -d -s "$session_name" -c "$dir"
-	fi
-	# change first window number if necessary
-	local created_window_num="$(first_window_num)"
-	if [ $created_window_num -ne $window_number ]; then
-		tmux move-window -s "${session_name}:${created_window_num}" -t "${session_name}:${window_number}"
-	fi
-}
-
-new_pane() {
-	local session_name="$1"
-	local window_number="$2"
-	local dir="$3"
-	local pane_index="$4"
-	local pane_id="${session_name}:${window_number}.${pane_index}"
-	if is_restoring_pane_contents && pane_contents_file_exists "$pane_id"; then
-		local pane_creation_command="$(pane_creation_command "$session_name" "$window_number" "$pane_index")"
-		tmux split-window -t "${session_name}:${window_number}" -c "$dir" "$pane_creation_command"
-	else
-		tmux split-window -t "${session_name}:${window_number}" -c "$dir"
-	fi
-	# minimize window so more panes can fit
-	tmux resize-pane -t "${session_name}:${window_number}" -U "999"
-}
-
-restore_pane() {
-	local pane="$1"
-	while IFS=$d read line_type session_name window_number window_active window_flags pane_index pane_title dir pane_active pane_command pane_full_command; do
-		dir="$(remove_first_char "$dir")"
-		pane_full_command="$(remove_first_char "$pane_full_command")"
-		if [ "$session_name" == "0" ]; then
-			restored_session_0_true
-		fi
-		if pane_exists "$session_name" "$window_number" "$pane_index"; then
-			if is_restoring_from_scratch; then
-				# overwrite the pane
-				# happens only for the first pane if it's the only registered pane for the whole tmux server
-				local pane_id="$(tmux display-message -p -F "#{pane_id}" -t "$session_name:$window_number")"
-				new_pane "$session_name" "$window_number" "$dir" "$pane_index"
-				tmux kill-pane -t "$pane_id"
-			else
-				# Pane exists, no need to create it!
-				# Pane existence is registered. Later, its process also won't be restored.
-				register_existing_pane "$session_name" "$window_number" "$pane_index"
-			fi
-		elif window_exists "$session_name" "$window_number"; then
-			new_pane "$session_name" "$window_number" "$dir" "$pane_index"
-		elif session_exists "$session_name"; then
-			new_window "$session_name" "$window_number" "$dir" "$pane_index"
-		else
-			new_session "$session_name" "$window_number" "$dir" "$pane_index"
-		fi
-		# set pane title
-		tmux select-pane -t "$session_name:$window_number.$pane_index" -T "$pane_title"
-	done < <(echo "$pane")
-}
-
-restore_state() {
-	local state="$1"
-	echo "$state" |
-	while IFS=$d read line_type client_session client_last_session; do
-		tmux switch-client -t "$client_last_session"
-		tmux switch-client -t "$client_session"
-	done
-}
-
-restore_grouped_session() {
-	local grouped_session="$1"
-	echo "$grouped_session" |
-	while IFS=$d read line_type grouped_session original_session alternate_window active_window; do
-		TMUX="" tmux -S "$(tmux_socket)" new-session -d -s "$grouped_session" -t "$original_session"
-	done
-}
-
-restore_active_and_alternate_windows_for_grouped_sessions() {
-	local grouped_session="$1"
-	echo "$grouped_session" |
-	while IFS=$d read line_type grouped_session original_session alternate_window_index active_window_index; do
-		alternate_window_index="$(remove_first_char "$alternate_window_index")"
-		active_window_index="$(remove_first_char "$active_window_index")"
-		if [ -n "$alternate_window_index" ]; then
-			tmux switch-client -t "${grouped_session}:${alternate_window_index}"
-		fi
-		if [ -n "$active_window_index" ]; then
-			tmux switch-client -t "${grouped_session}:${active_window_index}"
-		fi
-	done
-}
-
-never_ever_overwrite() {
-	local overwrite_option_value="$(get_tmux_option "$overwrite_option" "")"
-	[ -n "$overwrite_option_value" ]
-}
-
-detect_if_restoring_from_scratch() {
-	if never_ever_overwrite; then
+resurrect_dir() {
+	local opt
+	opt="$(tmux show-option -gqv '@resurrect-dir')"
+	if [ -n "$opt" ]; then
+		echo "$opt" | sed "s,\$HOME,$HOME,g; s,\$HOSTNAME,$(hostname),g; s,\~,$HOME,g"
 		return
 	fi
-	local total_number_of_panes="$(tmux list-panes -a | wc -l | sed 's/ //g')"
-	if [ "$total_number_of_panes" -eq 1 ]; then
-		restore_from_scratch_true
+	if [ -d "$HOME/.tmux/resurrect" ]; then
+		echo "$HOME/.tmux/resurrect"
+		return
 	fi
+	echo "${XDG_DATA_HOME:-$HOME/.local/share}/tmux/resurrect"
 }
 
-detect_if_restoring_pane_contents() {
-	if capture_pane_contents_option_on; then
-		cache_tmux_default_command
-		restore_pane_contents_true
-	fi
+msg() {
+	tmux display-message "$1"
 }
 
-# functions called from main (ordered)
-
-restore_all_panes() {
-	detect_if_restoring_from_scratch   # sets a global variable
-	detect_if_restoring_pane_contents  # sets a global variable
-	if is_restoring_pane_contents; then
-		pane_content_files_restore_from_archive
-	fi
-	while read line; do
-		if is_line_type "pane" "$line"; then
-			restore_pane "$line"
+hook() {
+	local kind="$1"
+	shift
+	local cmd args=""
+	cmd="$(tmux show-option -gqv "@resurrect-hook-$kind")"
+	if [ -n "$cmd" ]; then
+		if [ "$#" -gt 0 ]; then
+			printf -v args "%q " "$@"
 		fi
-	done < "$LAST_RESURRECT_FILE"
-}
-
-handle_session_0() {
-	if is_restoring_from_scratch && ! has_restored_session_0; then
-		local current_session="$(tmux display -p "#{client_session}")"
-		if [ "$current_session" == "0" ]; then
-			tmux switch-client -n
-		fi
-		tmux kill-session -t "0"
-	fi
-}
-
-restore_window_properties() {
-	local window_name
-	\grep '^window' "$LAST_RESURRECT_FILE" |
-		while IFS=$d read line_type session_name window_number window_name window_active window_flags window_layout automatic_rename; do
-			tmux select-layout -t "${session_name}:${window_number}" "$window_layout"
-
-			# Below steps are properly handling window names and automatic-rename
-			# option. `rename-window` is an extra command in some scenarios, but we
-			# opted for always doing it to keep the code simple.
-			window_name="$(remove_first_char "$window_name")"
-			tmux rename-window -t "${session_name}:${window_number}" "$window_name"
-			if [ "${automatic_rename}" = ":" ]; then
-				tmux set-option -u -t "${session_name}:${window_number}" automatic-rename
-			else
-				tmux set-option -t "${session_name}:${window_number}" automatic-rename "$automatic_rename"
-			fi
-		done
-}
-
-restore_all_pane_processes() {
-	if restore_pane_processes_enabled; then
-		local pane_full_command
-		awk 'BEGIN { FS="\t"; OFS="\t" } /^pane/ && $11 !~ "^:$" { print $2, $3, $6, $8, $11; }' "$LAST_RESURRECT_FILE" |
-			while IFS=$d read -r session_name window_number pane_index dir pane_full_command; do
-				dir="$(remove_first_char "$dir")"
-				pane_full_command="$(remove_first_char "$pane_full_command")"
-				restore_pane_process "$pane_full_command" "$session_name" "$window_number" "$pane_index" "$dir"
-			done
-	fi
-}
-
-restore_active_pane_for_each_window() {
-	awk 'BEGIN { FS="\t"; OFS="\t" } /^pane/ && $9 == 1 { print $2, $3, $6; }' "$LAST_RESURRECT_FILE" |
-		while IFS=$d read session_name window_number active_pane; do
-			tmux switch-client -t "${session_name}:${window_number}"
-			tmux select-pane -t "$active_pane"
-		done
-}
-
-restore_zoomed_windows() {
-	awk 'BEGIN { FS="\t"; OFS="\t" } /^pane/ && $5 ~ /Z/ && $9 == 1 { print $2, $3; }' "$LAST_RESURRECT_FILE" |
-		while IFS=$d read session_name window_number; do
-			tmux resize-pane -t "${session_name}:${window_number}" -Z
-		done
-}
-
-restore_grouped_sessions() {
-	while read line; do
-		if is_line_type "grouped_session" "$line"; then
-			restore_grouped_session "$line"
-			restore_active_and_alternate_windows_for_grouped_sessions "$line"
-		fi
-	done < "$LAST_RESURRECT_FILE"
-}
-
-restore_active_and_alternate_windows() {
-	awk 'BEGIN { FS="\t"; OFS="\t" } /^window/ && $6 ~ /[*-]/ { print $2, $5, $3; }' "$LAST_RESURRECT_FILE" |
-		sort -u |
-		while IFS=$d read session_name active_window window_number; do
-			tmux switch-client -t "${session_name}:${window_number}"
-		done
-}
-
-restore_active_and_alternate_sessions() {
-	while read line; do
-		if is_line_type "state" "$line"; then
-			restore_state "$line"
-		fi
-	done < "$LAST_RESURRECT_FILE"
-}
-
-# A cleanup that happens after 'restore_all_panes' seems to fix fish shell
-# users' restore problems.
-cleanup_restored_pane_contents() {
-	if is_restoring_pane_contents; then
-		rm "$(pane_contents_dir "restore")"/*
+		eval "$cmd $args"
 	fi
 }
 
 main() {
-	LAST_RESURRECT_FILE="$(last_resurrect_file)"
-	if supported_tmux_version_ok && check_saved_session_exists; then
-		start_spinner "Restoring..." "Tmux restore complete!"
-		execute_hook "pre-restore-all"
-		restore_all_panes
-		handle_session_0
-		restore_window_properties >/dev/null 2>&1
-		execute_hook "pre-restore-pane-processes"
-		restore_all_pane_processes
-		# below functions restore exact cursor positions
-		restore_active_pane_for_each_window
-		restore_zoomed_windows
-		restore_grouped_sessions  # also restores active and alt windows for grouped sessions
-		restore_active_and_alternate_windows
-		restore_active_and_alternate_sessions
-		cleanup_restored_pane_contents
-		execute_hook "post-restore-all"
-		stop_spinner
-		display_message "Tmux restore complete!"
+	local dir last save_file script
+
+	dir="$(resurrect_dir)"
+	last="$dir/last"
+
+	# Resolve save file
+	if [ ! -L "$last" ] && [ ! -f "$last" ]; then
+		msg "Tmux resurrect: no save file found!"
+		return 1
 	fi
+	save_file="$(readlink "$last" 2>/dev/null || true)"
+	# Handle relative symlink target
+	case "$save_file" in
+		/*) ;; # absolute path, use as-is
+		*)  save_file="$dir/$save_file" ;;
+	esac
+	if [ ! -f "$save_file" ]; then
+		msg "Tmux resurrect: save file not found: $save_file"
+		return 1
+	fi
+
+	# Validate header
+	local version
+	version="$(head -1 "$save_file" | sed -n 's/.*"v":\([0-9]*\).*/\1/p')"
+	if [ -z "$version" ] || [ "$version" -gt 2 ] 2>/dev/null; then
+		msg "Tmux resurrect: unsupported save format (version: ${version:-unknown})"
+		return 1
+	fi
+
+	# Detect "from scratch" mode: only 1 pane = fresh tmux server
+	local from_scratch="false"
+	local total_panes
+	total_panes="$(tmux list-panes -a -F x | wc -l | tr -d ' ')"
+	if [ "$total_panes" -eq 1 ]; then
+		from_scratch="true"
+	fi
+
+	msg "Restoring..."
+	hook "pre-restore-all"
+
+	# In from-scratch mode, rename the default session out of the way so the
+	# awk generator can create everything fresh without name conflicts.
+	local tmp_session="_resurrect_tmp_$$"
+	if [ "$from_scratch" = "true" ]; then
+		local default_session
+		default_session="$(tmux display-message -p '#{client_session}')"
+		tmux rename-session -t "$default_session" "$tmp_session"
+	fi
+
+	# Snapshot existing state (one tmux command) for idempotent restore
+	local existing
+	existing="$(tmux list-panes -a -F '#{session_name}:#{window_index}.#{pane_index}')"
+
+	# Read tmux settings needed by the awk generator
+	local base_index pane_base_index
+	base_index="$(tmux show-option -gqv base-index)"
+	: "${base_index:=0}"
+	pane_base_index="$(tmux show-option -gqv pane-base-index)"
+	: "${pane_base_index:=0}"
+
+	# Generate tmux command script from save file
+	script="$(mktemp "${TMPDIR:-/tmp}/resurrect-restore.XXXXXX")"
+	trap 'rm -f "$script"' EXIT
+
+	awk -v from_scratch="$from_scratch" \
+	    -v base_index="$base_index" \
+	    -v pane_base="$pane_base_index" \
+	    -v existing="$existing" \
+	'
+	# --- JSON helpers ---
+	function jv(line, key,    pat, val, i, c, result, j) {
+		pat = "\"" key "\":"
+		i = index(line, pat)
+		if (i == 0) return ""
+		val = substr(line, i + length(pat))
+		if (substr(val, 1, 1) == "\"") {
+			val = substr(val, 2)
+			result = ""
+			for (j = 1; j <= length(val); j++) {
+				c = substr(val, j, 1)
+				if (c == "\\" && j < length(val)) {
+					j++
+					c = substr(val, j, 1)
+					if (c == "\"") result = result "\""
+					else if (c == "\\") result = result "\\"
+					else result = result c
+				} else if (c == "\"") {
+					break
+				} else {
+					result = result c
+				}
+			}
+			return result
+		} else {
+			sub(/[^0-9-].*/, "", val)
+			return val
+		}
+	}
+
+	# Quote a string for tmux source-file (double-quote syntax)
+	function tq(s) {
+		gsub(/\\/, "\\\\", s)
+		gsub(/"/, "\\\"", s)
+		gsub(/\$/, "\\$", s)
+		gsub(/#/, "\\#", s)
+		return "\"" s "\""
+	}
+
+	BEGIN {
+		# Parse existing panes into session/window/pane lookup tables
+		n = split(existing, earr, "\n")
+		for (i = 1; i <= n; i++) {
+			if (earr[i] == "") continue
+			exist_pane[earr[i]] = 1
+			# Derive session and window from "sess:win.pane"
+			dot = index(earr[i], ".")
+			if (dot > 0) {
+				sw = substr(earr[i], 1, dot - 1)
+				exist_window[sw] = 1
+				colon = index(sw, ":")
+				if (colon > 0) {
+					exist_session[substr(sw, 1, colon - 1)] = 1
+				}
+			}
+		}
+	}
+
+	# Skip header
+	/^\{"v":/ { next }
+
+	# Capture state line
+	/^\{"t":"state"/ {
+		state_active = jv($0, "active")
+		state_last = jv($0, "last")
+		next
+	}
+
+	# Capture grouped session lines
+	/^\{"t":"group"/ {
+		gc++
+		group_name[gc] = jv($0, "s")
+		group_orig[gc] = jv($0, "orig")
+		group_aw[gc] = jv($0, "aw")
+		group_altw[gc] = jv($0, "altw")
+		next
+	}
+
+	# Process pane lines — emit tmux commands for structure creation
+	/^\{"t":"pane"/ {
+		s   = jv($0, "s")
+		wi  = jv($0, "wi")
+		pi  = jv($0, "pi")
+		path = jv($0, "path")
+		wa  = jv($0, "wa")
+		pa  = jv($0, "pa")
+		wf  = jv($0, "wf")
+		pt  = jv($0, "pt")
+		wl  = jv($0, "wl")
+		wn  = jv($0, "wn")
+		ar  = jv($0, "ar")
+
+		sw = s ":" wi
+
+		# Track ordinal within window (for pane index mapping)
+		if (!(sw in win_pane_count)) win_pane_count[sw] = 0
+		pane_ord = win_pane_count[sw]
+		win_pane_count[sw]++
+		actual_pi = pane_base + pane_ord
+
+		# Determine what needs to be created
+		need_session = 0
+		need_window = 0
+		need_pane = 0
+		skip = 0
+
+		if (!(s in save_seen_session)) {
+			save_seen_session[s] = 1
+			if (!(s in exist_session)) {
+				need_session = 1
+			}
+		}
+
+		if (!(sw in save_seen_window)) {
+			save_seen_window[sw] = 1
+			if (!need_session && !(sw in exist_window)) {
+				need_window = 1
+			}
+		}
+
+		if (!need_session && !need_window) {
+			saved_target = s ":" wi "." pi
+			if (saved_target in exist_pane) {
+				skip = 1
+			} else {
+				need_pane = 1
+			}
+		}
+
+		# Emit creation commands
+		if (need_session) {
+			printf "new-session -d -s %s -c %s\n", tq(s), tq(path)
+			if (wi != base_index) {
+				printf "move-window -s %s -t %s\n", tq(s ":" base_index), tq(s ":" wi)
+			}
+		} else if (need_window) {
+			printf "new-window -d -t %s -c %s\n", tq(sw), tq(path)
+		} else if (need_pane) {
+			printf "split-window -t %s -c %s\n", tq(sw), tq(path)
+			printf "resize-pane -t %s -U 999\n", tq(sw)
+		}
+
+		# Track window properties (last pane seen for each window wins)
+		win_layout[sw] = wl
+		win_name[sw] = wn
+		win_ar[sw] = ar
+
+		# Track active pane per window (use actual index after creation)
+		if (pa == 1 && !skip) {
+			win_active_pane_pi[sw] = actual_pi
+		}
+
+		# Track pane title
+		if (pt != "" && !skip) {
+			ntitles++
+			title_sw[ntitles] = sw
+			title_pi[ntitles] = actual_pi
+			title_val[ntitles] = pt
+		}
+
+		# Track zoom (window flag Z on the active pane)
+		if (index(wf, "Z") > 0 && pa == 1) {
+			zoom_window[sw] = 1
+		}
+
+		# Track active/alternate windows per session
+		if (index(wf, "*") > 0) {
+			session_active_win[s] = wi
+		}
+		if (index(wf, "-") > 0) {
+			session_alt_win[s] = wi
+		}
+
+		# Remember session order for state restoration
+		if (!(s in session_order_seen)) {
+			session_order_seen[s] = 1
+			session_count++
+			session_order[session_count] = s
+		}
+	}
+
+	END {
+		# Phase B: Window properties — layout, name, automatic-rename
+		for (sw in save_seen_window) {
+			if (win_layout[sw] != "") {
+				printf "select-layout -t %s %s\n", tq(sw), tq(win_layout[sw])
+			}
+			if (win_name[sw] != "") {
+				printf "rename-window -t %s %s\n", tq(sw), tq(win_name[sw])
+			}
+			if (win_ar[sw] == "on") {
+				printf "set-option -t %s automatic-rename on\n", tq(sw)
+			} else if (win_ar[sw] == "off") {
+				printf "set-option -t %s automatic-rename off\n", tq(sw)
+			}
+		}
+
+		# Phase C: Active panes
+		for (sw in win_active_pane_pi) {
+			printf "select-pane -t %s\n", tq(sw "." win_active_pane_pi[sw])
+		}
+
+		# Pane titles
+		for (i = 1; i <= ntitles; i++) {
+			printf "select-pane -t %s -T %s\n", tq(title_sw[i] "." title_pi[i]), tq(title_val[i])
+		}
+
+		# Phase E: Zoom restoration
+		for (sw in zoom_window) {
+			printf "resize-pane -Z -t %s\n", tq(sw)
+		}
+
+		# Phase F: Grouped sessions
+		for (i = 1; i <= gc; i++) {
+			printf "new-session -d -s %s -t %s\n", tq(group_name[i]), tq(group_orig[i])
+			if (group_altw[i] != "" && group_altw[i] != "-1") {
+				printf "select-window -t %s\n", tq(group_name[i] ":" group_altw[i])
+			}
+			if (group_aw[i] != "" && group_aw[i] != "-1") {
+				printf "select-window -t %s\n", tq(group_name[i] ":" group_aw[i])
+			}
+		}
+
+		# Phase G: Active/alternate windows per session
+		# Set alternate windows first, then active (so active ends up selected)
+		for (i = 1; i <= session_count; i++) {
+			s = session_order[i]
+			if (s in session_alt_win) {
+				printf "select-window -t %s\n", tq(s ":" session_alt_win[s])
+			}
+		}
+		for (i = 1; i <= session_count; i++) {
+			s = session_order[i]
+			if (s in session_active_win) {
+				printf "select-window -t %s\n", tq(s ":" session_active_win[s])
+			}
+		}
+
+		# State: switch client to alternate then active session
+		if (state_last != "") {
+			printf "switch-client -t %s\n", tq(state_last)
+		}
+		if (state_active != "") {
+			printf "switch-client -t %s\n", tq(state_active)
+		}
+	}
+	' "$save_file" > "$script"
+
+	# Execute the generated tmux command script
+	tmux source-file "$script"
+
+	# From-scratch cleanup: kill the renamed default session
+	if [ "$from_scratch" = "true" ]; then
+		# Ensure client switched away from temp session
+		local current_session
+		current_session="$(tmux display-message -p '#{client_session}')"
+		if [ "$current_session" = "$tmp_session" ]; then
+			tmux switch-client -n 2>/dev/null || true
+		fi
+		tmux kill-session -t "$tmp_session" 2>/dev/null || true
+	fi
+
+	# --- Process restoration (second pass) ---
+	hook "pre-restore-pane-processes"
+
+	local processes
+	processes="$(tmux show-option -gqv '@resurrect-processes')"
+	: "${processes:=vi vim view nvim emacs man less more tail top htop irssi weechat mutt}"
+
+	if [ "$processes" != "false" ]; then
+		local rules
+		rules="$(tmux show-option -gqv '@resurrect-process-rules')"
+		: "${rules:=vim:vim -S;nvim:nvim -S}"
+
+		# Get actual pane map after structural restore
+		local actual_panes
+		actual_panes="$(tmux list-panes -a -F '#{session_name}:#{window_index}:#{pane_index}')"
+
+		awk -v actual_panes="$actual_panes" \
+		    -v processes="$processes" \
+		    -v rules="$rules" \
+		    -v existing_snap="$existing" \
+		    -v pane_base="$pane_base_index" \
+		'
+		function jv(line, key,    pat, val, i, c, result, j) {
+			pat = "\"" key "\":"
+			i = index(line, pat)
+			if (i == 0) return ""
+			val = substr(line, i + length(pat))
+			if (substr(val, 1, 1) == "\"") {
+				val = substr(val, 2)
+				result = ""
+				for (j = 1; j <= length(val); j++) {
+					c = substr(val, j, 1)
+					if (c == "\\" && j < length(val)) {
+						j++
+						c = substr(val, j, 1)
+						if (c == "\"") result = result "\""
+						else if (c == "\\") result = result "\\"
+						else result = result c
+					} else if (c == "\"") {
+						break
+					} else {
+						result = result c
+					}
+				}
+				return result
+			} else {
+				sub(/[^0-9-].*/, "", val)
+				return val
+			}
+		}
+
+		BEGIN {
+			# Build actual pane map: session:window:ordinal → actual pane index
+			n = split(actual_panes, ap, "\n")
+			for (i = 1; i <= n; i++) {
+				if (ap[i] == "") continue
+				# Split "session:window:pane" — but session may contain ":"
+				# Use last two ":" separated fields as window and pane
+				val = ap[i]
+				# Find last ":"
+				last_colon = 0
+				for (k = length(val); k >= 1; k--) {
+					if (substr(val, k, 1) == ":") { last_colon = k; break }
+				}
+				if (last_colon == 0) continue
+				pane_idx = substr(val, last_colon + 1)
+				rest = substr(val, 1, last_colon - 1)
+				# Find second-to-last ":"
+				prev_colon = 0
+				for (k = length(rest); k >= 1; k--) {
+					if (substr(rest, k, 1) == ":") { prev_colon = k; break }
+				}
+				if (prev_colon == 0) continue
+				sess = substr(rest, 1, prev_colon - 1)
+				win = substr(rest, prev_colon + 1)
+
+				sw = sess ":" win
+				ord = actual_sw_count[sw]++
+				actual_pane[sw ":" ord] = pane_idx
+			}
+
+			# Build process list
+			if (processes == ":all:") {
+				all_procs = 1
+			} else {
+				np = split(processes, proc_list, " ")
+			}
+
+			# Build rewrite rules
+			nr = split(rules, rule_arr, ";")
+			nrules = 0
+			for (i = 1; i <= nr; i++) {
+				ci = index(rule_arr[i], ":")
+				if (ci > 0) {
+					nrules++
+					rule_match[nrules] = substr(rule_arr[i], 1, ci - 1)
+					rule_cmd[nrules] = substr(rule_arr[i], ci + 1)
+				}
+			}
+
+			# Existing panes (skip process restore for these)
+			ne = split(existing_snap, earr, "\n")
+			for (i = 1; i <= ne; i++) {
+				if (earr[i] != "") exist_pane[earr[i]] = 1
+			}
+
+			# Common shell names to skip
+			shells["bash"] = 1; shells["fish"] = 1; shells["zsh"] = 1
+			shells["sh"] = 1; shells["dash"] = 1; shells["ksh"] = 1
+			shells["tcsh"] = 1; shells["csh"] = 1
+		}
+
+		/^\{"t":"pane"/ {
+			s    = jv($0, "s")
+			wi   = jv($0, "wi")
+			pi   = jv($0, "pi")
+			pcmd = jv($0, "pcmd")
+			cmd  = jv($0, "cmd")
+
+			sw = s ":" wi
+			ord = window_ord[sw]++
+
+			# Skip empty or shell-only processes
+			if (pcmd == "") next
+			base_cmd = pcmd
+			sub(/ .*/, "", base_cmd)
+			sub(/.*\//, "", base_cmd)
+			if (base_cmd in shells) next
+
+			# Skip panes that existed before restore (idempotency)
+			saved_target = s ":" wi "." pi
+			if (saved_target in exist_pane) next
+
+			# Look up actual pane index via ordinal mapping
+			api = actual_pane[sw ":" ord]
+			if (api == "") next
+			target = s ":" wi "." api
+
+			# Check process list
+			first_word = pcmd
+			sub(/ .*/, "", first_word)
+
+			if (!all_procs) {
+				matched = 0
+				for (i = 1; i <= np; i++) {
+					if (first_word == proc_list[i]) { matched = 1; break }
+				}
+				if (!matched) next
+			}
+
+			# Apply rewrite rules
+			restore_cmd = pcmd
+			for (i = 1; i <= nrules; i++) {
+				m = rule_match[i]
+				if (substr(m, 1, 1) == "~") {
+					# Substring match
+					m = substr(m, 2)
+					if (index(pcmd, m) > 0) {
+						restore_cmd = (rule_cmd[i] == "*") ? pcmd : rule_cmd[i]
+						break
+					}
+				} else {
+					# Word boundary match (first word of pcmd)
+					if (first_word == m) {
+						restore_cmd = (rule_cmd[i] == "*") ? pcmd : rule_cmd[i]
+						break
+					}
+				}
+			}
+
+			# Output: target TAB command
+			printf "%s\t%s\n", target, restore_cmd
+		}
+		' "$save_file" | while IFS=$'\t' read -r target cmd; do
+			tmux send-keys -t "$target" "$cmd" C-m
+		done
+	fi
+
+	hook "post-restore-all"
+	msg "Tmux restore complete!"
 }
+
 main

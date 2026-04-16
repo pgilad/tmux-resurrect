@@ -1,36 +1,16 @@
 # Restoring programs
-  - [General instructions](#general-instructions)
-  - [Clarifications](#clarifications)
-  - [Working with NodeJS](#nodejs)
-  - [Restoring Mosh](#mosh)
 
-### General instructions <a name="general-instructions"></a>
-Only a conservative list of programs is restored by default:<br/>
-`vi vim nvim emacs man less more tail top htop irssi weechat mutt`.
+### Default behavior
+
+Only a conservative list of programs is restored by default:
+`vi vim view nvim emacs man less more tail top htop irssi weechat mutt`.
 
 This can be configured with `@resurrect-processes` option in `.tmux.conf`. It
-contains space-separated list of additional programs to restore.
+contains a space-separated list of additional programs to restore.
 
 - Example restoring additional programs:
 
         set -g @resurrect-processes 'ssh psql mysql sqlite3'
-
-- Programs with arguments should be double quoted:
-
-        set -g @resurrect-processes 'some_program "git log"'
-
-- Start with tilde to restore a program whose process contains target name:
-
-        set -g @resurrect-processes 'irb pry "~rails server" "~rails console"'
-
-- Use `->` to specify a command to be used when restoring a program (useful if
-  the default restore command fails ):
-
-        set -g @resurrect-processes 'some_program "grunt->grunt development"'
-
-- Use `*` to expand the arguments from the saved command when restoring:
-
-        set -g @resurrect-processes 'some_program "~rails server->rails server *"'
 
 - Don't restore any programs:
 
@@ -40,166 +20,60 @@ contains space-separated list of additional programs to restore.
 
         set -g @resurrect-processes ':all:'
 
-  Be *very careful* with this: tmux-resurrect can not know which programs take
+  Be *very careful* with this: tmux-resurrect cannot know which programs take
   which context, and a `sudo mkfs.vfat /dev/sdb` that was just formatting an
   external USB stick could wipe your backup hard disk if that's what's attached
   after rebooting.
 
-  This option is primarily useful for experimentation (e.g., to find out which
-  program is recognized in a pane).
+### Process rewrite rules
 
-### Clarifications <a name="clarfications"></a>
+When a program is restored, you may want to change the command that gets
+replayed. This is controlled with the `@resurrect-process-rules` option, which
+contains semicolon-separated `match:command` pairs.
 
-> I don't understand tilde `~`, what is it and why is it used when restoring
-  programs?
+Default:
 
-Let's say you use `rails server` command often. You want `tmux-resurrect` to
-save and restore it automatically. You might try adding `rails server` to the
-list of programs that will be restored:
+    set -g @resurrect-process-rules 'vim:vim -S;nvim:nvim -S'
 
-    set -g @resurrect-processes '"rails server"'  # will NOT work
+**Plain match** - the match string is compared against the first word of the
+saved process command:
 
-Upon save, `rails server` command will actually be saved as this command:
-`/Users/user/.rbenv/versions/2.0.0-p481/bin/ruby script/rails server`
-(if you wanna see how is any command saved, check it yourself in
-`~/.tmux/resurrect/last` file).
+    set -g @resurrect-process-rules 'vim:vim -S;nvim:nvim -S'
 
-When programs are restored, the `rails server` command will NOT be restored
-because it does not **strictly** match the long
-`/Users/user/.rbenv/versions/2.0.0-p481/bin/ruby script/rails server` string.
+This means: if the process started with `vim`, restore it as `vim -S`. If it
+started with `nvim`, restore it as `nvim -S`.
 
-The tilde `~` at the start of the string relaxes process name matching.
+**Tilde match** (`~`) - the match string is searched as a substring anywhere in
+the full saved command:
 
-    set -g @resurrect-processes '"~rails server"'  # OK
+    set -g @resurrect-process-rules '~rails server:*'
 
-The above option says: "restore full process if `rails server` string is found
-ANYWHERE in the process name".
+This means: if the saved command contains `rails server` anywhere, replay the
+original full command as-is (the `*` means "use original command").
 
-If you check long process string, there is in fact a `rails server` string at
-the end, so now the process will be successfully restored.
+**Using `*` for the command** replays the exact original command that was saved:
 
-> What is arrow `->` and why is is used?
+    set -g @resurrect-process-rules '~rails server:*;~bin/webpack-dev-server:*'
 
-(Please read the above clarification about tilde `~`).
+### Examples
 
-Continuing with our `rails server` example, when the process is finally restored
-correctly it might not look pretty as you'll see the whole
-`/Users/user/.rbenv/versions/2.0.0-p481/bin/ruby script/rails server` string in
-the command line.
+Restore `rails server` with original arguments:
 
-Naturally, you'd rather want to see just `rails server` (what you initially
-typed), but that information is now unfortunately lost.
+    set -g @resurrect-process-rules '~rails server:*'
 
-To aid this, you can use arrow `->`: (**note**: there is no space before and after `->`)
+Restore vim/neovim with session file support:
 
-    set -g @resurrect-processes '"~rails server->rails server"'  # OK
+    set -g @resurrect-process-rules 'vim:vim -S;nvim:nvim -S'
 
-This option says: "when this process is restored use `rails server` as the
-command name".
+Disable command rewriting (restore commands exactly as saved):
 
-Full (long) process name is now ignored and you'll see just `rails server` in
-the command line when the program is restored.
+    set -g @resurrect-process-rules ''
 
-> What is asterisk `*` and why is it used?
+### How to debug
 
-(Please read the above clarifications about tilde `~` and arrow `->`).
-
-Continuing with the `rails server` example, you might have added flags for e.g.
-verbose logging, but with the above configuration, the flags would be lost.
-
-To preserve the command arguments when restoring, use the asterisk `*`: (**note**: there **must** be a space before `*`)
-
-    set -g @resurrect-processes '"~rails server->rails server *"'
-
-This option says: "when this process is restored use `rails server` as the
-command name, but preserve its arguments".
-
-> Now I understand the tilde and the arrow, but things still don't work for me
-
-Here's the general workflow for figuring this out:
-
-- Set up your whole tmux environment manually.<br/>
-  In our example case, we'd type `rails server` in a pane where we want it to
-  run.
-- Save tmux env (it will get saved to `~/.tmux/resurrect/last`).
-- Open `~/.tmux/resurrect/last` file and try to find full process string for
-  your program.<br/>
-  Unfortunately this is a little vague but it should be easy. A smart
-  thing to do for our example is to search for string `rails` in the `last`
-  file.
-- Now that you know the full and the desired process string use tilde `~` and
-  arrow `->` in `.tmux.conf` to make things work.
-
-### Working with NodeJS <a name="nodejs"></a>
-If you are working with NodeJS, you may get some troubles with configuring restoring programs.
-
-Particularly, some programs like `gulp`, `grunt` or `npm` are not saved with parameters so tmux-resurrect cannot restore it. This is actually **not tmux-resurrect's issue** but more likely, those programs' issues. For example if you run `gulp watch` or `npm start` and then try to look at `ps` or `pgrep`, you will only see `gulp` or `npm`.
-
-To deal with these issues, one solution is to use [yarn](https://yarnpkg.com/en/docs/install) which a package manager for NodeJS and an alternative for `npm`. It's nearly identical to `npm` and very easy to use. Therefore you don't have to do any migration, you can simply use it immediately. For example:
-- `npm test` is equivalent to `yarn test`,
-- `npm run watch:dev` is equivalent to `yarn watch:dev`
-- more interestingly, `gulp watch:dev` is equivalent to `yarn gulp watch:dev`
-
-Before continuing, please ensure that you understand the [clarifications](#clarifications) section about `~` and `->`
-
-#### yarn
-It's fairly straight forward if you have been using `yarn` already.
-
-    set -g @resurrect-processes '"~yarn watch"'
-    set -g @resurrect-processes '"~yarn watch->yarn watch"'
-
-
-#### npm
-Instead of
-
-    set -g @resurrect-processes '"~npm run watch"'  # will NOT work
-
-we use
-
-    set -g @resurrect-processes '"~yarn watch"'     # OK
-
-
-#### gulp
-Instead of
-
-    set -g @resurrect-processes '"~gulp test"'      # will NOT work
-
-we use
-
-    set -g @resurrect-processes '"~yarn gulp test"' # OK
-
-
-#### nvm
-If you use `nvm` in your project, here is how you could config tmux-resurrect:
-
-    set -g @resurrect-processes '"~yarn gulp test->nvm use && gulp test"'
-
-#### Another problem
-Let take a look at this example
-
-    set -g @resurrect-processes '\
-          "~yarn gulp test->gulp test" \
-          "~yarn gulp test-it->gulp test-it" \
-    '
-**This will not work properly**, only `gulp test` is run, although you can see the command `node /path/to/yarn gulp test-it` is added correctly in `.tmux/resurrect/last` file.
-
-The reason is when restoring program, the **command part after the dash `-` is ignored** so instead  of command `gulp test-it`, the command `gulp test` which will be run.
-
-A work around, for this problem until it's fixed, is:
-- the config should be like this:
-
-      set -g @resurrect-processes '\
-          "~yarn gulp test->gulp test" \
-          "~yarn gulp \"test-it\"->gulp test-it" \
-
-- and in `.tmux/resurrect/last`, we should add quote to `test-it` word
-
-      ... node:node /path/to/yarn gulp "test-it"
-
-
-### Restoring Mosh <a name="#mosh"></a>
-Mosh spawns a `mosh-client` process, so we need to specify that as the process to be resurrected.
-
-    set -g @resurrect-processes 'mosh-client'
-
-Additionally a mosh-client strategy is provided to handle extracting the original arguments and re-run Mosh.
+- Save your tmux environment (`prefix + Ctrl-s`).
+- Open the save file (the `last` symlink in your save directory points to the
+  most recent save). It's a JSONL file with one JSON object per line.
+- Look for `"pcmd"` fields in pane lines to see the full process commands that
+  were captured.
+- The `"cmd"` field shows the short process name.
