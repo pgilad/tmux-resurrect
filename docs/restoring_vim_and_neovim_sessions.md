@@ -18,13 +18,13 @@ the `-S` flag, override the rules:
 
     set -g @resurrect-process-rules 'vim:vim;nvim:nvim'
 
-Or to disable process rewrite rules entirely:
+Or to replay the original vim/neovim commands exactly as saved:
 
-    set -g @resurrect-process-rules ''
+    set -g @resurrect-process-rules 'vim:*;nvim:*'
 
-> If you're using the vim binary provided by MacVim.app then you'll need to add
-> it to `@resurrect-processes`, for example:
+> If you're using a different executable name, such as `mvim`, include that
+> exact command name in `@resurrect-processes`, for example:
 > ```
-> set -g @resurrect-processes '~Vim'
-> set -g @resurrect-process-rules '~Vim:vim -S'
+> set -g @resurrect-processes 'vi vim view nvim mvim'
+> set -g @resurrect-process-rules 'vim:vim -S;nvim:nvim -S;mvim:vim -S'
 > ```

@@ -1,13 +1,10 @@
 # Restoring pane contents
 
-This plugin supports saving and restoring tmux pane contents.
+Saving and restoring visible tmux pane contents is not implemented in the v2
+save format.
 
-This feature can be enabled by adding this line to `.tmux.conf`:
+The older `@resurrect-capture-pane-contents` option is currently ignored:
 
     set -g @resurrect-capture-pane-contents 'on'
 
-When enabled, the visible pane contents are captured on save and replayed on
-restore.
-
-**Note:** This is an optional feature that is not yet implemented in the v2
-redesign. It will be added in a future release.
+Do not rely on this option until pane-content support is reintroduced.

@@ -6,9 +6,9 @@ Only a conservative list of programs is restored by default:
 `vi vim view nvim emacs man less more tail top htop irssi weechat mutt`.
 
 This can be configured with `@resurrect-processes` option in `.tmux.conf`. It
-contains a space-separated list of additional programs to restore.
+contains the full space-separated list of programs to restore.
 
-- Example restoring additional programs:
+- Example restoring a custom program list:
 
         set -g @resurrect-processes 'ssh psql mysql sqlite3'
 
@@ -65,9 +65,9 @@ Restore vim/neovim with session file support:
 
     set -g @resurrect-process-rules 'vim:vim -S;nvim:nvim -S'
 
-Disable command rewriting (restore commands exactly as saved):
+Replay original vim/neovim commands exactly as saved:
 
-    set -g @resurrect-process-rules ''
+    set -g @resurrect-process-rules 'vim:*;nvim:*'
 
 ### How to debug
 
