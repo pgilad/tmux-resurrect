@@ -110,6 +110,40 @@ in `~/.local/share/tmux/resurrect/` by default (following XDG conventions), or
 in `~/.tmux/resurrect/` if that directory already exists from a previous
 installation.
 
+### Avoid mixed plugin installs
+
+Make sure all saves and restores come from the same installed copy of
+`tmux-resurrect`. This matters when using
+[tmux-continuum](https://github.com/tmux-plugins/tmux-continuum), changing
+plugin managers, or keeping more than one plugin directory around.
+
+`tmux-resurrect` exports the script paths it loaded:
+
+    @resurrect-save-script-path
+    @resurrect-restore-script-path
+
+Use those options in custom hooks instead of hard-coding a plugin path:
+
+    set-hook -g session-closed 'run-shell "#{@resurrect-save-script-path} quiet"'
+    set-hook -g client-detached 'run-shell "#{@resurrect-save-script-path} quiet"'
+
+Avoid hooks like this:
+
+    set-hook -g client-detached 'run-shell ~/.config/tmux/plugins/tmux-resurrect/scripts/save.sh'
+
+A hard-coded path can make one `tmux-resurrect` install save old `.txt` files
+while another install restores the v2 `.jsonl` format. On startup this can look
+like:
+
+    Tmux resurrect: unsupported save format (version: unknown)
+
+When using `tmux-continuum`, load `tmux-resurrect` before `tmux-continuum` so
+continuum sees the correct exported script paths. After upgrading to v2, run one
+new save and confirm that `last` points to a `.jsonl` file:
+
+    tmux run-shell "#{@resurrect-save-script-path} quiet"
+    readlink ~/.local/share/tmux/resurrect/last
+
 ### Save performance
 
 The v2 save process is designed to be fast and lightweight:
