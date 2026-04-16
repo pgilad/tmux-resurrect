@@ -210,28 +210,46 @@ fetch_and_dump_grouped_sessions(){
 
 # translates pane pid to process command running inside a pane
 dump_panes() {
-	local full_command
 	local save_command_strategy="$(save_command_strategy)"
-	local ps_output_file=""
+
 	if [ "$save_command_strategy" == "ps" ]; then
-		ps_output_file="$(mktemp "${TMPDIR:-/tmp}/tmux-resurrect-ps.XXXXXX")"
-		dump_pane_commands_to_file "$ps_output_file"
-	fi
-	dump_panes_raw |
+		local ps_file
+		ps_file="$(mktemp "${TMPDIR:-/tmp}/tmux-resurrect-ps.XXXXXX")"
+		dump_pane_commands_to_file "$ps_file"
+
+		# Single awk process joins ps output with pane data
+		awk -v grouped="$GROUPED_SESSIONS" '
+		NR == FNR {
+			pid = $1
+			if (!(pid in cmds)) {
+				$1 = ""
+				sub(/^ /, "")
+				cmds[pid] = $0
+			}
+			next
+		}
+		{
+			n = split($0, f, "\t")
+			if (index(grouped, "\t" f[2] "\t") > 0) next
+			dir = f[8]
+			gsub(/ /, "\\\\ ", dir)
+			cmd = (f[11] in cmds) ? cmds[f[11]] : ""
+			printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t:%s\n", f[1], f[2], f[3], f[4], f[5], f[6], f[7], dir, f[9], f[10], cmd
+		}' "$ps_file" <(dump_panes_raw)
+
+		rm -f "$ps_file"
+	else
+		local full_command
 		while IFS=$d read line_type session_name window_number window_active window_flags pane_index pane_title dir pane_active pane_command pane_pid history_size; do
 			# not saving panes from grouped sessions
 			if is_session_grouped "$session_name"; then
 				continue
 			fi
-			if [ -n "$ps_output_file" ]; then
-				full_command="$(pane_full_command_from_file "$pane_pid" "$ps_output_file")"
-			else
-				full_command="$(pane_full_command "$pane_pid")"
-			fi
-			dir=$(echo $dir | sed 's/ /\\ /') # escape all spaces in directory path
+			full_command="$(pane_full_command "$pane_pid")"
+			dir=$(echo "$dir" | sed 's/ /\\ /g') # escape all spaces in directory path
 			echo "${line_type}${d}${session_name}${d}${window_number}${d}${window_active}${d}${window_flags}${d}${pane_index}${d}${pane_title}${d}${dir}${d}${pane_active}${d}${pane_command}${d}:${full_command}"
-		done
-	[ -z "$ps_output_file" ] || rm -f "$ps_output_file"
+		done < <(dump_panes_raw)
+	fi
 }
 
 dump_windows() {
