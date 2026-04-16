@@ -25,6 +25,11 @@ contains the full space-separated list of programs to restore.
   external USB stick could wipe your backup hard disk if that's what's attached
   after rebooting.
 
+Plain entries match the first word of the saved command, or that word's
+basename. Entries starting with `~` match the full saved command as a substring:
+
+    set -g @resurrect-processes 'vim nvim ~MacVim.app'
+
 ### Process rewrite rules
 
 When a program is restored, you may want to change the command that gets

@@ -525,7 +525,15 @@ main() {
 			if (!all_procs) {
 				matched = 0
 				for (i = 1; i <= np; i++) {
-					if (first_word == proc_list[i]) { matched = 1; break }
+					p = proc_list[i]
+					if (p == "") continue
+					if (substr(p, 1, 1) == "~") {
+						p = substr(p, 2)
+						if (p != "" && index(pcmd, p) > 0) { matched = 1; break }
+					} else if (first_word == p || base_cmd == p) {
+						matched = 1
+						break
+					}
 				}
 				if (!matched) next
 			}

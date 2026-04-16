@@ -22,9 +22,9 @@ Or to replay the original vim/neovim commands exactly as saved:
 
     set -g @resurrect-process-rules 'vim:*;nvim:*'
 
-> If you're using a different executable name, such as `mvim`, include that
-> exact command name in `@resurrect-processes`, for example:
+> If you're using the vim binary provided by MacVim.app, include a substring
+> match in `@resurrect-processes`, for example:
 > ```
-> set -g @resurrect-processes 'vi vim view nvim mvim'
-> set -g @resurrect-process-rules 'vim:vim -S;nvim:nvim -S;mvim:vim -S'
+> set -g @resurrect-processes 'vi vim view nvim ~MacVim.app'
+> set -g @resurrect-process-rules 'vim:vim -S;nvim:nvim -S;~MacVim.app:vim -S'
 > ```
