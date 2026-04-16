@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 
-CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 resurrect_dir() {
 	local opt
 	opt="$(tmux show-option -gqv '@resurrect-dir')"
@@ -34,7 +32,7 @@ hook() {
 }
 
 main() {
-	local dir last save_file script
+	local dir last save_file script existing_file actual_panes_file
 
 	dir="$(resurrect_dir)"
 	last="$dir/last"
@@ -88,8 +86,8 @@ main() {
 	fi
 
 	# Snapshot existing state (one tmux command) for idempotent restore
-	local existing
-	existing="$(tmux list-panes -a -F '#{session_name}:#{window_index}.#{pane_index}')"
+	existing_file="$(mktemp "${TMPDIR:-/tmp}/resurrect-existing.XXXXXX")"
+	tmux list-panes -a -F '#{session_name}:#{window_index}.#{pane_index}' > "$existing_file"
 
 	# Read tmux settings needed by the awk generator
 	local base_index pane_base_index
@@ -100,12 +98,13 @@ main() {
 
 	# Generate tmux command script from save file
 	script="$(mktemp "${TMPDIR:-/tmp}/resurrect-restore.XXXXXX")"
-	trap 'rm -f "$script"' EXIT
+	actual_panes_file=""
+	trap 'rm -f "$script" "$existing_file" "$actual_panes_file"' EXIT
 
 	awk -v from_scratch="$from_scratch" \
 	    -v base_index="$base_index" \
 	    -v pane_base="$pane_base_index" \
-	    -v existing="$existing" \
+	    -v existing_file="$existing_file" \
 	'
 	# --- JSON helpers ---
 	function jv(line, key,    pat, val, i, c, result, j) {
@@ -148,14 +147,13 @@ main() {
 
 	BEGIN {
 		# Parse existing panes into session/window/pane lookup tables
-		n = split(existing, earr, "\n")
-		for (i = 1; i <= n; i++) {
-			if (earr[i] == "") continue
-			exist_pane[earr[i]] = 1
+		while ((getline existing_pane < existing_file) > 0) {
+			if (existing_pane == "") continue
+			exist_pane[existing_pane] = 1
 			# Derive session and window from "sess:win.pane"
-			dot = index(earr[i], ".")
+			dot = index(existing_pane, ".")
 			if (dot > 0) {
-				sw = substr(earr[i], 1, dot - 1)
+				sw = substr(existing_pane, 1, dot - 1)
 				exist_window[sw] = 1
 				colon = index(sw, ":")
 				if (colon > 0) {
@@ -163,6 +161,7 @@ main() {
 				}
 			}
 		}
+		close(existing_file)
 	}
 
 	# Skip header
@@ -321,7 +320,9 @@ main() {
 
 		# Phase F: Grouped sessions
 		for (i = 1; i <= gc; i++) {
-			printf "new-session -d -s %s -t %s\n", tq(group_name[i]), tq(group_orig[i])
+			if (!(group_name[i] in exist_session)) {
+				printf "new-session -d -s %s -t %s\n", tq(group_name[i]), tq(group_orig[i])
+			}
 			if (group_altw[i] != "" && group_altw[i] != "-1") {
 				printf "select-window -t %s\n", tq(group_name[i] ":" group_altw[i])
 			}
@@ -356,7 +357,10 @@ main() {
 	' "$save_file" > "$script"
 
 	# Execute the generated tmux command script
-	tmux source-file "$script"
+	if ! tmux source-file "$script"; then
+		msg "Tmux resurrect: failed to restore tmux structure"
+		return 1
+	fi
 
 	# From-scratch cleanup: kill the renamed default session
 	if [ "$from_scratch" = "true" ]; then
@@ -390,13 +394,13 @@ main() {
 		: "${rules:=vim:vim -S;nvim:nvim -S}"
 
 		# Get actual pane map after structural restore
-		local actual_panes
-		actual_panes="$(tmux list-panes -a -F '#{session_name}:#{window_index}:#{pane_index}')"
+		actual_panes_file="$(mktemp "${TMPDIR:-/tmp}/resurrect-actual-panes.XXXXXX")"
+		tmux list-panes -a -F '#{session_name}:#{window_index}:#{pane_index}' > "$actual_panes_file"
 
-		awk -v actual_panes="$actual_panes" \
+		awk -v actual_panes_file="$actual_panes_file" \
 		    -v processes="$processes" \
 		    -v rules="$rules" \
-		    -v existing_snap="$existing" \
+		    -v existing_file="$existing_file" \
 		    -v pane_base="$pane_base_index" \
 		'
 		function jv(line, key,    pat, val, i, c, result, j) {
@@ -430,12 +434,10 @@ main() {
 
 		BEGIN {
 			# Build actual pane map: session:window:ordinal → actual pane index
-			n = split(actual_panes, ap, "\n")
-			for (i = 1; i <= n; i++) {
-				if (ap[i] == "") continue
+			while ((getline val < actual_panes_file) > 0) {
+				if (val == "") continue
 				# Split "session:window:pane" — but session may contain ":"
 				# Use last two ":" separated fields as window and pane
-				val = ap[i]
 				# Find last ":"
 				last_colon = 0
 				for (k = length(val); k >= 1; k--) {
@@ -457,6 +459,7 @@ main() {
 				ord = actual_sw_count[sw]++
 				actual_pane[sw ":" ord] = pane_idx
 			}
+			close(actual_panes_file)
 
 			# Build process list
 			if (processes == ":all:") {
@@ -478,10 +481,10 @@ main() {
 			}
 
 			# Existing panes (skip process restore for these)
-			ne = split(existing_snap, earr, "\n")
-			for (i = 1; i <= ne; i++) {
-				if (earr[i] != "") exist_pane[earr[i]] = 1
+			while ((getline existing_pane < existing_file) > 0) {
+				if (existing_pane != "") exist_pane[existing_pane] = 1
 			}
+			close(existing_file)
 
 			# Common shell names to skip
 			shells["bash"] = 1; shells["fish"] = 1; shells["zsh"] = 1

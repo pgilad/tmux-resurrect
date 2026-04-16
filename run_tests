@@ -1,1 +1,6 @@
-lib/tmux-test/run_tests
+#!/usr/bin/env bash
+set -euo pipefail
+
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+exec "$CURRENT_DIR/tests/run_tests_in_isolation" "$@"

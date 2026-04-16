@@ -1,1 +1,35 @@
-../lib/tmux-test/tests/run_tests_in_isolation
+#!/usr/bin/env bash
+set -euo pipefail
+
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+shopt -s nullglob
+
+if [ "$#" -gt 0 ]; then
+	tests=("$@")
+else
+	tests=("$CURRENT_DIR"/test_*.sh)
+fi
+
+if [ "${#tests[@]}" -eq 0 ]; then
+	echo "No tests found" >&2
+	exit 1
+fi
+
+failures=0
+for test_file in "${tests[@]}"; do
+	printf '==> %s\n' "${test_file##*/}"
+	if bash "$test_file"; then
+		printf 'ok  %s\n' "${test_file##*/}"
+	else
+		printf 'not ok  %s\n' "${test_file##*/}" >&2
+		failures=$((failures + 1))
+	fi
+done
+
+if [ "$failures" -gt 0 ]; then
+	printf '%s test file(s) failed\n' "$failures" >&2
+	exit 1
+fi
+
+printf 'All test files passed\n'

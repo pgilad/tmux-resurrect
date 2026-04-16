@@ -1,0 +1,2 @@
+pane	legacy	0	:bash	1	:*	0	:/tmp	1	bash	:
+state	legacy
