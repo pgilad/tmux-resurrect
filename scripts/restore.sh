@@ -31,6 +31,50 @@ hook() {
 	fi
 }
 
+resolve_last_save_file() {
+	local dir="$1"
+	local last="$2"
+	local save_file first_line
+
+	if [ -L "$last" ]; then
+		save_file="$(readlink "$last" 2>/dev/null || true)"
+		if [ -z "$save_file" ]; then
+			msg "Tmux resurrect: save file link is unreadable: $last"
+			return 1
+		fi
+	elif [ -f "$last" ]; then
+		IFS= read -r first_line < "$last" || true
+		case "$first_line" in
+			'{"v":2'*)
+				printf '%s\n' "$last"
+				return 0
+				;;
+			"")
+				msg "Tmux resurrect: last save pointer is empty: $last"
+				return 1
+				;;
+			*)
+				save_file="$first_line"
+				;;
+		esac
+	else
+		msg "Tmux resurrect: no save file found!"
+		return 1
+	fi
+
+	# Handle relative symlink target or pointer-file target.
+	case "$save_file" in
+		/*) ;; # absolute path, use as-is
+		*)  save_file="$dir/$save_file" ;;
+	esac
+	if [ ! -f "$save_file" ]; then
+		msg "Tmux resurrect: save file not found: $save_file"
+		return 1
+	fi
+
+	printf '%s\n' "$save_file"
+}
+
 main() {
 	local dir last save_file script existing_file actual_panes_file
 
@@ -38,18 +82,7 @@ main() {
 	last="$dir/last"
 
 	# Resolve save file
-	if [ ! -L "$last" ] && [ ! -f "$last" ]; then
-		msg "Tmux resurrect: no save file found!"
-		return 1
-	fi
-	save_file="$(readlink "$last" 2>/dev/null || true)"
-	# Handle relative symlink target
-	case "$save_file" in
-		/*) ;; # absolute path, use as-is
-		*)  save_file="$dir/$save_file" ;;
-	esac
-	if [ ! -f "$save_file" ]; then
-		msg "Tmux resurrect: save file not found: $save_file"
+	if ! save_file="$(resolve_last_save_file "$dir" "$last")"; then
 		return 1
 	fi
 
@@ -107,7 +140,20 @@ main() {
 	    -v existing_file="$existing_file" \
 	'
 	# --- JSON helpers ---
-	function jv(line, key,    pat, val, i, c, result, j) {
+	function hex_value(hex,    i, c, n, digit) {
+		n = 0
+		for (i = 1; i <= length(hex); i++) {
+			c = substr(hex, i, 1)
+			if (c >= "0" && c <= "9") digit = c + 0
+			else if (c >= "a" && c <= "f") digit = index("abcdef", c) + 9
+			else if (c >= "A" && c <= "F") digit = index("ABCDEF", c) + 9
+			else return -1
+			n = n * 16 + digit
+		}
+		return n
+	}
+
+	function jv(line, key,    pat, val, i, c, result, j, e, hex, code) {
 		pat = "\"" key "\":"
 		i = index(line, pat)
 		if (i == 0) return ""
@@ -119,10 +165,26 @@ main() {
 				c = substr(val, j, 1)
 				if (c == "\\" && j < length(val)) {
 					j++
-					c = substr(val, j, 1)
-					if (c == "\"") result = result "\""
-					else if (c == "\\") result = result "\\"
-					else result = result c
+					e = substr(val, j, 1)
+					if (e == "\"" || e == "\\" || e == "/") result = result e
+					else if (e == "b") result = result chr[8]
+					else if (e == "f") result = result chr[12]
+					else if (e == "n") result = result chr[10]
+					else if (e == "r") result = result chr[13]
+					else if (e == "t") result = result chr[9]
+					else if (e == "u" && j + 4 <= length(val)) {
+						hex = substr(val, j + 1, 4)
+						code = hex_value(hex)
+						if (code >= 0) {
+							if (code <= 255) result = result chr[code]
+							else result = result "\\u" hex
+							j += 4
+						} else {
+							result = result e
+						}
+					} else {
+						result = result e
+					}
 				} else if (c == "\"") {
 					break
 				} else {
@@ -137,15 +199,31 @@ main() {
 	}
 
 	# Quote a string for tmux source-file (double-quote syntax)
-	function tq(s) {
-		gsub(/\\/, "\\\\", s)
-		gsub(/"/, "\\\"", s)
-		gsub(/\$/, "\\$", s)
-		gsub(/#/, "\\#", s)
-		return "\"" s "\""
+	function tq(s,    out, i, c, code) {
+		out = ""
+		for (i = 1; i <= length(s); i++) {
+			c = substr(s, i, 1)
+			if (c == "\\") out = out "\\\\"
+			else if (c == "\"") out = out "\\\""
+			else if (c == "$") out = out "\\$"
+			else if (c == "#") out = out "\\#"
+			else if (c == chr[8]) out = out "\\010"
+			else if (c == chr[9]) out = out "\\t"
+			else if (c == chr[10]) out = out "\\n"
+			else if (c == chr[12]) out = out "\\014"
+			else if (c == chr[13]) out = out "\\r"
+			else if ((c in ord) && ord[c] < 32) out = out sprintf("\\%03o", ord[c])
+			else out = out c
+		}
+		return "\"" out "\""
 	}
 
 	BEGIN {
+		for (i = 1; i < 256; i++) {
+			chr[i] = sprintf("%c", i)
+			ord[chr[i]] = i
+		}
+
 		# Parse existing panes into session/window/pane lookup tables
 		while ((getline existing_pane < existing_file) > 0) {
 			if (existing_pane == "") continue
@@ -403,7 +481,20 @@ main() {
 		    -v existing_file="$existing_file" \
 		    -v pane_base="$pane_base_index" \
 		'
-		function jv(line, key,    pat, val, i, c, result, j) {
+		function hex_value(hex,    i, c, n, digit) {
+			n = 0
+			for (i = 1; i <= length(hex); i++) {
+				c = substr(hex, i, 1)
+				if (c >= "0" && c <= "9") digit = c + 0
+				else if (c >= "a" && c <= "f") digit = index("abcdef", c) + 9
+				else if (c >= "A" && c <= "F") digit = index("ABCDEF", c) + 9
+				else return -1
+				n = n * 16 + digit
+			}
+			return n
+		}
+
+		function jv(line, key,    pat, val, i, c, result, j, e, hex, code) {
 			pat = "\"" key "\":"
 			i = index(line, pat)
 			if (i == 0) return ""
@@ -415,10 +506,26 @@ main() {
 					c = substr(val, j, 1)
 					if (c == "\\" && j < length(val)) {
 						j++
-						c = substr(val, j, 1)
-						if (c == "\"") result = result "\""
-						else if (c == "\\") result = result "\\"
-						else result = result c
+						e = substr(val, j, 1)
+						if (e == "\"" || e == "\\" || e == "/") result = result e
+						else if (e == "b") result = result chr[8]
+						else if (e == "f") result = result chr[12]
+						else if (e == "n") result = result chr[10]
+						else if (e == "r") result = result chr[13]
+						else if (e == "t") result = result chr[9]
+						else if (e == "u" && j + 4 <= length(val)) {
+							hex = substr(val, j + 1, 4)
+							code = hex_value(hex)
+							if (code >= 0) {
+								if (code <= 255) result = result chr[code]
+								else result = result "\\u" hex
+								j += 4
+							} else {
+								result = result e
+							}
+						} else {
+							result = result e
+						}
 					} else if (c == "\"") {
 						break
 					} else {
@@ -433,6 +540,10 @@ main() {
 		}
 
 		BEGIN {
+			for (i = 1; i < 256; i++) {
+				chr[i] = sprintf("%c", i)
+			}
+
 			# Build actual pane map: session:window:ordinal → actual pane index
 			while ((getline val < actual_panes_file) > 0) {
 				if (val == "") continue

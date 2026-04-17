@@ -29,6 +29,15 @@ assert_saved_jsonl_covers_tmux_state() {
 		' "$file" >/dev/null
 }
 
+assert_all_save_files_parse_as_jsonl() {
+	local dir="$1"
+	local file
+
+	while IFS= read -r file; do
+		jq -e -s 'all(.[]; type == "object")' "$file" >/dev/null
+	done < <(find "$dir" -type f -name 'tmux_resurrect_*.jsonl')
+}
+
 test_save_writes_v2_jsonl_and_dedupes_unchanged_state() {
 	setup_test_env
 
@@ -57,6 +66,7 @@ test_save_writes_v2_jsonl_and_dedupes_unchanged_state() {
 	file="$(last_save_file "$dir")"
 	assert_file_exists "$file"
 	assert_eq "1" "$(count_save_files "$dir")" "initial save file count"
+	assert_all_save_files_parse_as_jsonl "$dir"
 	assert_saved_jsonl_covers_tmux_state "$file" "$project_dir" "$src_dir" "$logs_dir"
 
 	sleep 1
@@ -85,6 +95,38 @@ test_save_respects_configured_resurrect_dir_expansion() {
 	jq -e -s '.[0].v == 2 and any(.[]; .t == "pane" and .s == "custom")' "$file" >/dev/null
 }
 
+test_save_escapes_tabbed_paths_and_quotes() {
+	setup_test_env
+
+	local tabbed_dir="$TEST_TMPDIR/project"$'\t'"tab"
+	local window_name='work "main"'
+	local pane_title='right "quoted" pane'
+	mkdir -p "$tabbed_dir"
+	tabbed_dir="$(canonical_path "$tabbed_dir")"
+
+	tmux new-session -d -s escaping -n initial -c "$tabbed_dir"
+	tmux rename-window -t escaping:0 "$window_name"
+	tmux select-pane -t escaping:0.0 -T "$pane_title"
+
+	run_save
+
+	local dir file
+	dir="$(save_dir)"
+	file="$(last_save_file "$dir")"
+	assert_all_save_files_parse_as_jsonl "$dir"
+	jq -e -s \
+		--arg path "$tabbed_dir" \
+		--arg window_name "$window_name" \
+		--arg pane_title "$pane_title" \
+		'
+		any(.[]; .t == "pane" and
+			.s == "escaping" and
+			.path == $path and
+			.wn == $window_name and
+			.pt == $pane_title)
+		' "$file" >/dev/null
+}
+
 test_save_writes_group_metadata_for_secondary_grouped_sessions() {
 	setup_test_env
 
@@ -108,6 +150,7 @@ test_save_writes_group_metadata_for_secondary_grouped_sessions() {
 main() {
 	test_save_writes_v2_jsonl_and_dedupes_unchanged_state
 	test_save_respects_configured_resurrect_dir_expansion
+	test_save_escapes_tabbed_paths_and_quotes
 	test_save_writes_group_metadata_for_secondary_grouped_sessions
 }
 
