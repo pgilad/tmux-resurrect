@@ -146,11 +146,11 @@ new save and confirm that `last` points to a `.jsonl` file:
 
 The v2 save process is designed to be fast and lightweight:
 
-- **Single process snapshot** — one `ps` call captures all pane processes upfront,
-  replacing the old per-pane strategy lookups (pgrep, /proc, gdb).
-- **Single tmux query** — `tmux list-panes -a` retrieves all pane data in one
-  call, piped through a single AWK pass that joins process data in-memory and
-  emits NDJSON directly.
+- **Single process snapshot** — one `ps` call captures pane child processes
+  upfront, replacing the old per-pane strategy lookups (pgrep, /proc, gdb).
+- **Safe tmux field capture** — pane fields are read from tmux in a way that
+  preserves user-controlled tabs, newlines, quotes, and paths before JSON
+  escaping.
 - **No visual overhead** — no spinner or progress display; the save completes in
   under a second on typical setups and is imperceptible.
 - **Deduplication** — if the environment hasn't changed since the last save, the

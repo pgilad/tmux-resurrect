@@ -60,6 +60,46 @@ test_restore_rejects_v2_file_without_panes() {
 	assert_session_exists scratch
 }
 
+test_restore_rejects_unsupported_v1_save_file() {
+	setup_test_env
+
+	local dir
+	dir="$(save_dir)"
+	mkdir -p "$dir"
+	cat > "$dir/v1.jsonl" <<'JSONL'
+{"v":1,"ts":"2026-01-01T00:00:00Z","tmux":"3.2"}
+{"t":"pane","s":"old","wi":0,"pi":0,"path":"/tmp","cmd":"sh","pcmd":"","pa":1,"wf":"*","pt":"","wl":"layout","wn":"main","ar":"on"}
+JSONL
+	ln -sf v1.jsonl "$dir/last"
+
+	tmux new-session -d -s scratch
+
+	if run_restore; then
+		fail "restore should reject unsupported v1 save files"
+	fi
+	assert_session_exists scratch
+}
+
+test_restore_rejects_malformed_pane_schema() {
+	setup_test_env
+
+	local dir
+	dir="$(save_dir)"
+	mkdir -p "$dir"
+	cat > "$dir/malformed.jsonl" <<'JSONL'
+{"v":2,"ts":"2026-01-01T00:00:00Z","tmux":"3.2"}
+{"t":"pane","s":"broken","wi":0,"pi":0,"path":"/tmp","cmd":"sh","pcmd":"","wf":"*","pt":"","wl":"layout","wn":"main","ar":"on"}
+JSONL
+	ln -sf malformed.jsonl "$dir/last"
+
+	tmux new-session -d -s scratch
+
+	if run_restore; then
+		fail "restore should reject pane rows missing required fields"
+	fi
+	assert_session_exists scratch
+}
+
 test_restore_supports_regular_last_jsonl_file() {
 	setup_test_env
 
@@ -130,6 +170,8 @@ main() {
 	test_restore_fails_when_no_save_exists
 	test_restore_rejects_legacy_format
 	test_restore_rejects_v2_file_without_panes
+	test_restore_rejects_unsupported_v1_save_file
+	test_restore_rejects_malformed_pane_schema
 	test_restore_supports_regular_last_jsonl_file
 	test_restore_supports_regular_last_relative_pointer
 	test_restore_fails_for_broken_last_symlink

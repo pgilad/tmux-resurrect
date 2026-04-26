@@ -1,37 +1,14 @@
 #!/usr/bin/env bash
 
-QUIET="$1"
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/helpers.sh
+source "$CURRENT_DIR/helpers.sh"
 
-resurrect_dir() {
-	local opt
-	opt="$(tmux show-option -gqv '@resurrect-dir')"
-	if [ -n "$opt" ]; then
-		echo "$opt" | sed "s,\$HOME,$HOME,g; s,\$HOSTNAME,$(hostname),g; s,\~,$HOME,g"
-		return
-	fi
-	if [ -d "$HOME/.tmux/resurrect" ]; then
-		echo "$HOME/.tmux/resurrect"
-		return
-	fi
-	echo "${XDG_DATA_HOME:-$HOME/.local/share}/tmux/resurrect"
-}
+QUIET="${1-}"
 
 msg() {
 	[ "$QUIET" = "quiet" ] && return
 	tmux display-message "$1"
-}
-
-hook() {
-	local kind="$1"
-	shift
-	local cmd args=""
-	cmd="$(tmux show-option -gqv "@resurrect-hook-$kind")"
-	if [ -n "$cmd" ]; then
-		if [ "$#" -gt 0 ]; then
-			printf -v args "%q " "$@"
-		fi
-		eval "$cmd $args"
-	fi
 }
 
 tmux_value() {
@@ -174,7 +151,7 @@ main() {
 		# field boundaries before JSON escaping.
 		local pane_target pane_session_id session_name window_index pane_index
 		local pane_current_path pane_current_command pane_pid
-		local window_active pane_active window_flags pane_title window_layout
+		local pane_active window_flags pane_title window_layout
 		local window_name automatic_rename pane_command
 		while IFS=$'\t' read -r pane_session_id window_index pane_index; do
 			[ -n "$pane_session_id" ] || continue
@@ -188,7 +165,6 @@ main() {
 			pane_current_path="$(tmux_target_value "$pane_target" "#{pane_current_path}")"
 			pane_current_command="$(tmux_target_value "$pane_target" "#{pane_current_command}")"
 			pane_pid="$(tmux_target_value "$pane_target" "#{pane_pid}")"
-			window_active="$(tmux_target_value "$pane_target" "#{window_active}")"
 			pane_active="$(tmux_target_value "$pane_target" "#{pane_active}")"
 			window_flags="$(tmux_target_value "$pane_target" "#{window_flags}")"
 			pane_title="$(tmux_target_value "$pane_target" "#{pane_title}")"
@@ -197,14 +173,13 @@ main() {
 			automatic_rename="$(tmux_target_value "$pane_target" "#{?automatic-rename,on,off}")"
 			pane_command="$(pane_process_command "$pane_pid" "$ps_file")"
 
-			printf '{"t":"pane","s":"%s","wi":%s,"pi":%s,"path":"%s","cmd":"%s","pcmd":"%s","wa":%s,"pa":%s,"wf":"%s","pt":"%s","wl":"%s","wn":"%s","ar":"%s"}\n' \
+			printf '{"t":"pane","s":"%s","wi":%s,"pi":%s,"path":"%s","cmd":"%s","pcmd":"%s","pa":%s,"wf":"%s","pt":"%s","wl":"%s","wn":"%s","ar":"%s"}\n' \
 				"$(json_escape "$session_name")" \
 				"$window_index" \
 				"$pane_index" \
 				"$(json_escape "$pane_current_path")" \
 				"$(json_escape "$pane_current_command")" \
 				"$(json_escape "$pane_command")" \
-				"$window_active" \
 				"$pane_active" \
 				"$(json_escape "$window_flags")" \
 				"$(json_escape "$pane_title")" \
