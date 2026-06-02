@@ -76,11 +76,39 @@ replaced.
 
 ### Installation with [tpm-rs](https://github.com/pgilad/tpm-rs) (recommended)
 
-Add plugin to your `.tmux.conf`:
+Add the plugin to `${XDG_CONFIG_HOME:-$HOME/.config}/tpm/tpm.yaml`:
 
-    set -g @plugin 'tmux-plugins/tmux-resurrect'
+```yaml
+version: 1
+plugins:
+  - source: pgilad/tmux-resurrect
+```
 
-Then install with `prefix + I`.
+Or let `tpm` add it for you:
+
+```bash
+tpm add pgilad/tmux-resurrect
+```
+
+Load plugins from your `tmux.conf`:
+
+```tmux
+run-shell "tpm load"
+```
+
+Plugin-specific tmux options still belong in `tmux.conf`; `tpm.yaml` only declares which plugins to install and load. Put any `tmux-resurrect` options before `run-shell "tpm load"`.
+
+Install the configured plugins:
+
+```bash
+tpm install
+```
+
+Then reload tmux:
+
+```bash
+tmux source-file ~/.tmux.conf
+```
 
 ### Manual Installation
 
