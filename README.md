@@ -31,7 +31,7 @@ It even (optionally)
 [restores vim and neovim sessions](docs/restoring_vim_and_neovim_sessions.md)!
 
 Automatic restoring and continuous saving of tmux env is also possible with
-[tmux-continuum](https://github.com/tmux-plugins/tmux-continuum) plugin.
+[tmux-continuum](https://github.com/pgilad/tmux-continuum) plugin.
 
 ### Screencast
 
@@ -133,7 +133,7 @@ installation.
 
 Make sure all saves and restores come from the same installed copy of
 `tmux-resurrect`. This matters when using
-[tmux-continuum](https://github.com/tmux-plugins/tmux-continuum), changing
+[tmux-continuum](https://github.com/pgilad/tmux-continuum), changing
 plugin managers, or keeping more than one plugin directory around.
 
 `tmux-resurrect` exports the script paths it loaded:
@@ -178,7 +178,7 @@ The v2 save process is designed to be fast and lightweight:
   duplicate file is discarded and no new backup is written.
 
 These improvements make frequent saves practical. If you use
-[tmux-continuum](https://github.com/tmux-plugins/tmux-continuum) for automatic
+[tmux-continuum](https://github.com/pgilad/tmux-continuum) for automatic
 saving, a shorter interval such as 5 minutes works well:
 
     set -g @continuum-save-interval '5'
@@ -194,7 +194,7 @@ there is no performance reason to keep it that long.
   highlighted text to system clipboard
 - [tmux-open](https://github.com/tmux-plugins/tmux-open) - a plugin for quickly
   opening highlighted file or a url
-- [tmux-continuum](https://github.com/tmux-plugins/tmux-continuum) - automatic
+- [tmux-continuum](https://github.com/pgilad/tmux-continuum) - automatic
   restoring and continuous saving of tmux env
 
 ### Reporting bugs and contributing
