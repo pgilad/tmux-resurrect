@@ -2,6 +2,21 @@
 
 Restore `tmux` environment after system restart.
 
+## Why use this fork instead of the original?
+
+This project is based on the original [tmux-plugins/tmux-resurrect](https://github.com/tmux-plugins/tmux-resurrect), with a modernized save/restore implementation focused on reliability, performance, and XDG-friendly defaults.
+
+Main differences:
+
+- **Versioned v2 save format** — saves use NDJSON (`.jsonl`) instead of the original text format, making them self-describing and easier to validate.
+- **XDG-friendly save location** — saves are stored in `~/.local/share/tmux/resurrect/` by default, while still supporting an existing `~/.tmux/resurrect/` directory for compatibility.
+- **Faster saves** — pane process data is captured with a single `ps` snapshot instead of heavier per-pane lookups.
+- **Safer serialization** — tmux fields are captured and JSON-escaped in a way that preserves tabs, newlines, quotes, and paths.
+- **No visual save overhead** — saves run quietly without spinner/progress UI.
+- **Deduplication** — unchanged environments do not create duplicate backup files.
+- **Better frequent autosave support** — the lighter save path works well with shorter `tmux-continuum` intervals.
+
+
 Tmux is great, except when you have to restart the computer. You lose all the
 running programs, working directories, pane layouts etc.
 There are helpful management tools out there, but they require initial
